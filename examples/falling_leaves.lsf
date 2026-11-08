@@ -1,0 +1,15 @@
+# Falling leaves for a door frame: centre = top, leaves fall out to both ends.
+# Green: 1 pixel in 10. Leaves: 1-2 px, red..yellow, 2 layers. sp=speed ix=count
+let ct = 2 * i - (n - 1)                 # signed centre offset (half px)
+let fall = t * (4 + sp / 16) / 1000      # distance travelled
+let wA = fall - abs(ct)                  # leaf coordinate per layer
+let wB = fall * 5 / 8 - abs(ct)
+let hA = hash((wA >> 5) * 2 + (ct > 0))  # random value per cell and side
+let hB = hash((wB >> 5) * 2 + (ct > 0) + 100003)
+let hcA = hash(hA + 12345)
+let hcB = hash(hB + 54321)
+sel((hA & 255) < ix && ((wA - (hA >> 8) % 28) & 31) < 2 + 2 * (hcA & 1),
+  hsv((hcA >> 1) % 44, 255, 255),
+  sel((hB & 255) < ix && ((wB - (hB >> 8) % 28) & 31) < 2 + 2 * (hcB & 1),
+    hsv((hcB >> 1) % 44, 255, 255),
+    sel(i % 10 == hash(i / 10) % 10, hsv(70 + hash(i) % 24, 255, 70 + sin(t / 24 + hash(i)) / 3), 0)))

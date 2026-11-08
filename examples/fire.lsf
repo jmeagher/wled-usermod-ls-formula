@@ -1,0 +1,7 @@
+# 1D fire. Heat is kept in the red channel and read back with prev().
+# Heat rises toward higher indexes, cools each frame, sparks start at the base.
+let cool = 2 + sp / 32
+let up = (red(prev(-1)) + red(prev(-2)) * 2 + red(prev(0))) / 4
+let spark = sel(i < 3 && (hash(i + t / 30) & 255) < ix, 160 + (hash(t / 30 + i * 7) & 95), 0)
+let heat = max(clamp(up - cool, 0, 255), spark)
+rgb(heat, heat * heat / 255 * 7 / 10, heat * heat / 255 * heat / 255 / 4)

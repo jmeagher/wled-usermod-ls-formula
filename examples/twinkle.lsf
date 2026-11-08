@@ -1,0 +1,5 @@
+# Each pixel gets a random phase and fades in and out when its slot is "on".
+let phase = hash(i) & 255
+let life = tri(t / (4 + (255 - sp) / 16) + phase)
+let on = (hash(i + (t >> 11)) & 255) < ix
+sel(on, dim(pal(phase), life), 0)

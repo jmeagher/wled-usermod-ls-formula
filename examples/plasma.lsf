@@ -1,0 +1,5 @@
+# Classic plasma: three sines summed and looked up in the segment palette.
+let a = sin(x + t / 12)
+let b = sin(y * 2 + t / 17)
+let c = sin((x + y) / 2 + t / 23)
+pal((a + b + c) / 3 + sp)
