@@ -1,0 +1,5 @@
+# 2D concentric ripples from the centre (on a strip, cx = i and cy = 0).
+let dx = cx - w / 2
+let dy = cy - h / 2
+let d = abs(dx) + abs(dy)
+dim(pal(d * 8 + t / 20), sin(d * 24 - t / 4))

@@ -1,0 +1,4 @@
+# Calibration benchmark: 36 noise() calls per pixel. Not a nice effect.
+let a = x
+let b = t / 40 + i
+hsv(noise(a+0,b)+noise(a+7,b)+noise(a+14,b)+noise(a+21,b)+noise(a+28,b)+noise(a+35,b)+noise(a+42,b)+noise(a+49,b)+noise(a+56,b)+noise(a+63,b)+noise(a+70,b)+noise(a+77,b)+noise(a+84,b)+noise(a+91,b)+noise(a+98,b)+noise(a+105,b)+noise(a+112,b)+noise(a+119,b)+noise(a+126,b)+noise(a+133,b)+noise(a+140,b)+noise(a+147,b)+noise(a+154,b)+noise(a+161,b)+noise(a+168,b)+noise(a+175,b)+noise(a+182,b)+noise(a+189,b)+noise(a+196,b)+noise(a+203,b)+noise(a+210,b)+noise(a+217,b)+noise(a+224,b)+noise(a+231,b)+noise(a+238,b)+noise(a+245,b), 255, 200)

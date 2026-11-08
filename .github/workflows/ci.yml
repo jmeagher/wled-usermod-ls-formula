@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: '0 4 * * *'   # nightly: catches WLED API changes on main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: Engine tests (desktop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: Sine table is in sync with its generator
+        run: python3 tools/gen_sintab.py | diff - lsf_sintab.inc
+      - name: Compile, sanitize and run the engine tests
+        run: tests/run.sh
+      - name: Upload tool and documentation tests
+        run: python3 -I -m unittest discover -s tests -v
+
+  firmware:
+    name: Build ${{ matrix.env }} against WLED ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The WLED commit this usermod is tested against.
+          - { env: esp32dev,        label: pinned, ref: fffa05a765d41d7126b66ab5a3d1ce1f41e7d11e, experimental: false }
+          - { env: esp32c6dev_8MB,  label: pinned, ref: fffa05a765d41d7126b66ab5a3d1ce1f41e7d11e, experimental: false }
+          # WLED main as of today: an early warning, allowed to fail.
+          - { env: esp32dev,        label: main,   ref: main, experimental: true }
+          - { env: esp32c6dev_8MB,  label: main,   ref: main, experimental: true }
+    steps:
+      - name: Checkout usermod
+        uses: actions/checkout@v4
+        with: { path: wled-usermod-ls-formula, persist-credentials: false }
+      - name: Checkout WLED
+        uses: actions/checkout@v4
+        with: { repository: wled/WLED, ref: "${{ matrix.ref }}", path: WLED, persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ matrix.env }}-${{ hashFiles('WLED/platformio.ini') }}
+          restore-keys: pio-${{ matrix.env }}-
+      - run: pip install platformio
+      - name: Build the web UI (generates headers the firmware includes)
+        working-directory: WLED
+        run: npm ci && npm run build
+      - name: Add the usermod to a build environment
+        # WLED reads custom_usermods line by line: a URL must be on its own line, not mixed with bare names.
+        run: |
+          {
+            echo "[env:ci]"
+            echo "extends = env:${{ matrix.env }}"
+            echo "custom_usermods ="
+            echo "  \${env:${{ matrix.env }}.custom_usermods}"
+            echo "  symlink://${{ github.workspace }}/wled-usermod-ls-formula"
+          } >> WLED/platformio_override.ini
+          cat WLED/platformio_override.ini
+      - name: Build
+        run: platformio run -d WLED -e ci

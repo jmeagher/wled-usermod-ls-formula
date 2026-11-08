@@ -1,0 +1,12 @@
+build/
+.wled/
+.pio/
+__pycache__/
+*.pyc
+.DS_Store
+platformio_override.ini
+
+# A global gitignore that ignores every dotfile would otherwise hide these tracked files.
+!.gitignore
+!.github/
+!.github/**

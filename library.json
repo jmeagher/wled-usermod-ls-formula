@@ -1,0 +1,14 @@
+{
+  "name": "wled-usermod-ls-formula",
+  "version": "0.1.0",
+  "description": "WLED usermod: define new effects at run time with small integer formulas uploaded over WiFi",
+  "keywords": ["wled", "usermod", "effects", "led", "esp32"],
+  "repository": { "type": "git", "url": "https://github.com/jmeagher/wled-usermod-ls-formula.git" },
+  "authors": [{ "name": "John Meagher" }],
+  "license": "MIT",
+  "build": {
+    "libArchive": false,
+    "srcFilter": ["-<*>", "+<ls_formula.cpp>", "+<lsf.cpp>"]
+  },
+  "dependencies": {}
+}

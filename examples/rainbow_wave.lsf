@@ -1,0 +1,2 @@
+# Hue travels along the strip; brightness ripples on top.
+hsv(x + t / 8 + sp, 255, scale(sin(x * 2 - t / 6), 90, 255))

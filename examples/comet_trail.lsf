@@ -1,0 +1,4 @@
+# A bright head sweeps along with a fading tail (stateless: no prev needed).
+let pos = (t * (sp + 20) / 1024) % n
+let behind = (pos - i + n) % n
+dim(hsv(t / 40, 255, 255), clamp(255 - behind * (4 + ix / 16), 0, 255))
