@@ -42,7 +42,7 @@ jobs:
     steps:
       - name: Checkout usermod
         uses: actions/checkout@v4
-        with: { path: usermod, persist-credentials: false }
+        with: { path: wled-usermod-ls-formula, persist-credentials: false }
       - name: Checkout WLED
         uses: actions/checkout@v4
         with: { repository: wled/WLED, ref: "${{ matrix.ref }}", path: WLED, persist-credentials: false }
@@ -59,7 +59,15 @@ jobs:
         working-directory: WLED
         run: npm ci && npm run build
       - name: Add the usermod to a build environment
+        # WLED reads custom_usermods line by line: a URL must be on its own line, not mixed with bare names.
         run: |
-          printf '[env:ci]\nextends = env:${{ matrix.env }}\ncustom_usermods = ${env:${{ matrix.env }}.custom_usermods} file://${{ github.workspace }}/usermod\n' >> WLED/platformio_override.ini
+          {
+            echo "[env:ci]"
+            echo "extends = env:${{ matrix.env }}"
+            echo "custom_usermods ="
+            echo "  \${env:${{ matrix.env }}.custom_usermods}"
+            echo "  symlink://${{ github.workspace }}/wled-usermod-ls-formula"
+          } >> WLED/platformio_override.ini
+          cat WLED/platformio_override.ini
       - name: Build
         run: platformio run -d WLED -e ci
