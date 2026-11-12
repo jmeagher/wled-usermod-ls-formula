@@ -32,24 +32,28 @@ for p in "${patterns[@]}"; do
   python3 "$root/tools/lsfx.py" "$host" push "$slot" "$root/examples/$file" --name "$name" --activate
   sleep 1   # let the segment settle on the new effect before its state is saved
   post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":true,\"sb\":true}"
+  sleep 3   # WLED writes the preset asynchronously; a request that arrives before then can drop the write
   ids+=("$id"); durs+=("$((SECONDS_PER_PATTERN * 10))"); trans+=(7)
 done
 
 join() { local IFS=,; echo "$*"; }
-post /json/state "{\"playlist\":{\"ps\":[$(join "${ids[@]}")],\"dur\":[$(join "${durs[@]}")],\"transition\":[$(join "${trans[@]}")],\"repeat\":0,\"r\":false,\"end\":0},\"on\":true,\"o\":true,\"psave\":$playlist,\"n\":\"Fall patterns\"}"
 # This is the exact payload WLED's own web UI sends to save a playlist. "o":true marks it as a playlist; in testing,
 # leaving out "on" and "r" (as an earlier version did) made WLED run the playlist but never write it to presets.json.
-# The write can land a moment later, and starting preset $playlist before it does would load the old content,
-# so wait until presets.json really holds the playlist.
+post /json/state "{\"playlist\":{\"ps\":[$(join "${ids[@]}")],\"dur\":[$(join "${durs[@]}")],\"transition\":[$(join "${trans[@]}")],\"repeat\":0,\"r\":false,\"end\":0},\"on\":true,\"o\":true,\"psave\":$playlist,\"n\":\"Fall patterns\"}"
+
+# WLED writes the preset a moment later, and starting preset $playlist before then makes it run (and then re-save) the
+# OLD playlist, so wait until presets.json holds exactly the playlist just sent. Checking only that "a playlist
+# exists" is not enough: on a re-run the old one already does.
 saved=""
 for _ in $(seq 1 20); do
   if curl -fsS -m 10 "http://$host/presets.json" | python3 -c '
 import json, sys
-p = json.load(sys.stdin).get(sys.argv[1], {})
-sys.exit(0 if "playlist" in p and p.get("n") == "Fall patterns" else 1)' "$playlist"; then saved=yes; break; fi
+want_ps, want_dur = [int(x) for x in sys.argv[2].split(",")], [int(x) for x in sys.argv[3].split(",")]
+pl = json.load(sys.stdin).get(sys.argv[1], {}).get("playlist", {})
+sys.exit(0 if pl.get("ps") == want_ps and pl.get("dur") == want_dur else 1)' "$playlist" "$(join "${ids[@]}")" "$(join "${durs[@]}")"; then saved=yes; break; fi
   sleep 1
 done
-[ -n "$saved" ] || { echo "the playlist was not saved as preset $playlist" >&2; exit 1; }
+[ -n "$saved" ] || { echo "the new playlist was not saved as preset $playlist" >&2; exit 1; }
 post /json/cfg "{\"def\":{\"ps\":$playlist}}"
 post /json/state "{\"ps\":$playlist}"   # start it now
 sleep 2
