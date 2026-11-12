@@ -60,6 +60,40 @@ class ValidateStrips(unittest.TestCase):
             P.validate_strips([self.strip(p) for p in range(9)], BOARD)  # too many strips
 
 
+class MatrixStrips(unittest.TestCase):
+    M = "pin=18,len=256,matrix=32x8"
+
+    def test_parse_defaults_and_derived_len(self):
+        s = P.parse_strip("pin=18,matrix=32x8", BOARD)
+        self.assertEqual((s.length, s.matrix), (256, P.Matrix(32, 8, True, True, False, False)))
+        self.assertEqual(P.parse_strip("pin=18,matrix=8x8,vertical=no,serpentine=no,bottom=yes", BOARD).matrix,
+                         P.Matrix(8, 8, False, False, True, False))
+
+    def test_errors(self):
+        for bad in ["pin=18,matrix=32", "pin=18,matrix=0x8", "pin=18,len=100,matrix=32x8", "pin=18,len=9,serpentine=yes"]:
+            with self.subTest(bad), self.assertRaises(P.ProvisionError):
+                P.parse_strip(bad, BOARD)
+
+    def test_matrix_must_be_first_and_unique(self):
+        m, st = P.parse_strip("pin=18,matrix=32x8", BOARD), P.Strip("ws2812", "grb", 19, 50)
+        P.validate_strips([m, st], BOARD)
+        with self.assertRaises(P.ProvisionError):
+            P.validate_strips([st, m], BOARD)
+        with self.assertRaises(P.ProvisionError):
+            P.validate_strips([m, P.parse_strip("pin=19,matrix=8x8", BOARD)], BOARD)
+
+    def test_files_matrix_plus_strip(self):
+        f = files([P.parse_strip("pin=18,matrix=32x8", BOARD), P.Strip("ws2812", "grb", 19, 50)])
+        led = f["cfg.json"]["hw"]["led"]
+        self.assertEqual(led["total"], 306)
+        self.assertEqual(led["matrix"], {"mpc": 1, "panels": [{"b": False, "r": False, "v": True, "s": True,
+                                                              "x": 0, "y": 0, "h": 8, "w": 32}]})
+        self.assertEqual([(i["start"], i["len"], i["pin"]) for i in led["ins"]], [(0, 256, [18]), (256, 50, [19])])
+        seg = f["presets.json"]["1"]["seg"]
+        self.assertEqual([(s["start"], s["stop"], s.get("startY"), s.get("stopY")) for s in seg],
+                         [(0, 32, 0, 8), (256, 306, None, None)])
+
+
 class Secrets(unittest.TestCase):
     def test_parse(self):
         got = P.parse_secrets('# c\n\nWIFI_SSID = "my net"\nWIFI_PASSWORD=pa=ss\nAP_PASSWORD=\'x y z w v\'\n')
