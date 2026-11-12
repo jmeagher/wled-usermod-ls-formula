@@ -1,6 +1,6 @@
 # MBR-Door: centre = top of the door frame, leaves fall out to both ends in ~4 s.
 # Green: one dot per 10 px, each wandering slowly (~16 s per drift) within its block.
-# Leaves: 2-3 px, autumn hues (deep orange through amber), ~2 per second in total.
+# Leaves: 2-3 px, autumn hues (deep orange through amber), ~1 per second in total.
 let ct = 2 * i - (n - 1)               # signed offset from the centre, half px
 let lw = t / 82 - abs(ct)              # leaf coordinate: 49 half px in ~4 s
 let a = hash((lw >> 3) * 2 + (ct > 0)) # one random leaf slot per 8 half px, per side
@@ -10,6 +10,6 @@ let off = b % 3
 let ln = 4 + 2 * (b >> 4 & 1)          # 4 or 6 half px = 2 or 3 px
 let gp = 1280 + (noise(i / 10 * 997, t / 64) - 128) * 8   # green dot, 1/256 px
 let gi = max(0, 256 - abs(i % 10 * 256 - gp) * 3 / 2)
-sel((a & 255) < 166 && lp >= off && lp < off + ln,
+sel((a & 255) < 83 && lp >= off && lp < off + ln,
   hsv(6 + (b >> 8) % 27, 255, 255),
   hsv(75 + hash(i / 10) % 20, 255, gi * 2 / 5))
