@@ -140,7 +140,7 @@ A device can carry its own LS Formula effect and start in it. These live in `boa
 
 | Device | Effect |
 |---|---|
-| `mbr-door` | `falling_leaves.lsf`: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel red, orange and yellow leaves spawn at the middle about four times a second and fall to either end in about 2 s |
+| `mbr-door` | `falling_leaves.lsf`: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn-coloured leaves (deep orange through amber) spawn at the middle about twice a second and fall to either end in about 4 s |
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                 # defaults to mbr-door.local
