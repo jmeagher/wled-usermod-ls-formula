@@ -5,19 +5,20 @@
 #
 # Re-runnable. Run it after `provision`, which replaces the whole filesystem (formulas and presets included).
 #
-# Each formula goes into its own usermod slot and is saved as its own preset (3, 4, 5). Preset 2, "Fall patterns",
-# is a playlist that steps through them. TEST MODE: SECONDS is 5 so every pattern can be seen quickly; to settle
-# on one pattern, set the boot preset to that pattern's preset instead (see Readme: Per-device effects).
+# The formulas live in examples/. Each goes into its own usermod slot and is saved as its own preset (3, 4, 5).
+# Preset 2, "Fall patterns", is a playlist that steps through them, 2 minutes each by default
+# (SECONDS_PER_PATTERN=5 is handy to see all of them quickly). To settle on one pattern, make its preset the
+# boot preset instead (see Readme: Per-device effects).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 host="${1:-mbr-door.local}"
-SECONDS_PER_PATTERN="${SECONDS_PER_PATTERN:-5}"
+SECONDS_PER_PATTERN="${SECONDS_PER_PATTERN:-120}"
 playlist=2
 # slot | file | preset name | preset id
 patterns=(
-  "0|falling_leaves.lsf|Falling Leaves|3"
+  "0|falling_leaves_autumn.lsf|Falling Leaves|3"
   "1|autumn_twinkle.lsf|Autumn Twinkle|4"
   "2|end_flames.lsf|End Flames|5"
 )
@@ -28,7 +29,7 @@ curl -fsS -m 10 "http://$host/json/info" >/dev/null || { echo "$host did not ans
 ids=(); durs=(); trans=()
 for p in "${patterns[@]}"; do
   IFS='|' read -r slot file name id <<<"$p"
-  python3 "$root/tools/lsfx.py" "$host" push "$slot" "$here/$file" --name "$name" --activate
+  python3 "$root/tools/lsfx.py" "$host" push "$slot" "$root/examples/$file" --name "$name" --activate
   sleep 1   # let the segment settle on the new effect before its state is saved
   post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":true,\"sb\":true}"
   ids+=("$id"); durs+=("$((SECONDS_PER_PATTERN * 10))"); trans+=(7)

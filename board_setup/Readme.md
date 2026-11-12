@@ -138,18 +138,18 @@ Adding a chip type or another board is a one-line change to the `LED_TYPES` or `
 
 A device can carry its own LS Formula effects and start in them. These live in `board_setup/devices/<name>/`: the `.lsf` formulas plus an `apply.sh` that uploads them, saves each as a preset and sets the boot preset.
 
-**`mbr-door`: "Fall patterns".** The boot preset (2) is a playlist that steps through three patterns. **It is in test mode: 5 seconds per pattern**, so you can see all of them. Each pattern is also its own preset.
+**`mbr-door`: "Fall patterns".** The boot preset (2) is a playlist that steps through three patterns, **2 minutes each**. Each pattern is also its own preset. The formulas are the autumn set in [`examples/`](../examples/README.md#the-autumn-set).
 
 | Preset | Pattern | Formula |
 |---|---|---|
-| 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `falling_leaves.lsf` |
-| 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `autumn_twinkle.lsf` |
-| 5 | **End Flames**: a crackling fire. The main fire starts at both ends and slowly drifts toward the centre (about 3 px/s); thin wisps peel off it and drift all the way to the centre (the top), fading as they go; a few small bright pops near the ends | `end_flames.lsf` |
+| 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `examples/falling_leaves_autumn.lsf` |
+| 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `examples/autumn_twinkle.lsf` |
+| 5 | **End Flames**: a crackling fire. The main fire starts at both ends and slowly drifts toward the centre (about 3 px/s); thin wisps peel off it and drift all the way to the centre (the top), fading as they go; a few small bright pops near the ends | `examples/end_flames.lsf` |
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local
 board_setup/devices/mbr-door/apply.sh 192.168.1.50          # or give an address
-SECONDS_PER_PATTERN=30 board_setup/devices/mbr-door/apply.sh   # a slower rotation
+SECONDS_PER_PATTERN=5 board_setup/devices/mbr-door/apply.sh    # a fast rotation, to see every pattern
 ```
 
 To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
