@@ -1,0 +1,14 @@
+# Crackling fire: starts at both ends, drifts to the centre (the top). Noise bands =
+# main fire; thin wisps peel off it and drift all the way up; rare pops crackle.
+let e = min(i, n - 1 - i)                 # distance from the nearest end
+let side = (2 * i > n - 1)                # each end burns independently
+let b = noise(e * 60 - t / 6, t / 60 + side * 5000)
+let body = b * b / 255 * max(0, 256 - e * 13) / 256 * 7 / 5
+let u = e * 256 - t / 4 * 5               # wisp coordinate, ~5 px/s inward
+let wh = hash((u >> 10) * 2 + side)       # a wisp chance per 4 px
+let q = (u & 1023) - (wh >> 8) % 384      # position in the wisp, 1/256 px
+let wisp = sel((wh & 255) < 140 && q >= 0 && q < 640 && e > 3,
+  tri(q * 256 / 640) * min(170, 250 - e * 7) / 255 * min(255, (e - 3) * 64) / 255, 0)
+let pop = sel(e < 12 && (hash(i * 31 + t / 150) & 255) < 3, 140 + (hash(i + t / 150) & 127), 0)
+let heat = min(255, max(max(body, wisp), pop))
+rgb(heat, heat * heat / 255 * 7 / 10, heat * heat / 255 * heat / 255 / 4)
