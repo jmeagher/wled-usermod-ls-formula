@@ -144,7 +144,7 @@ A device can carry its own LS Formula effects and start in them. These live in `
 |---|---|---|
 | 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `falling_leaves.lsf` |
 | 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `autumn_twinkle.lsf` |
-| 5 | **End Flames**: a gentle crackling fire. Soft flames start at both ends and slowly drift toward the centre (about 3 px/s), with a few small pops near the ends | `end_flames.lsf` |
+| 5 | **End Flames**: a crackling fire. Flames start at both ends and slowly drift toward the centre (about 3 px/s), with a few small bright pops near the ends | `end_flames.lsf` |
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local

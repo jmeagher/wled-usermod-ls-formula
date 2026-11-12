@@ -1,9 +1,9 @@
-# Gentle crackling fire: flames start at both ends and slowly drift toward the centre.
+# Crackling fire: flames start at both ends and slowly drift toward the centre.
 # Slow noise bands give the soft rising flames; rare small pops near the ends give the crackle.
 let e = min(i, n - 1 - i)                         # distance from the nearest end
 let side = (2 * i > n - 1) * 5000                 # each end burns independently
 let b = noise(e * 60 - t / 6, t / 60 + side)      # bands drift inward ~3 px/s, slowly changing
-let body = b * b / 255 * max(0, 256 - e * 13) / 256 * 7 / 10
-let pop = sel(e < 12 && (hash(i * 31 + t / 150) & 255) < 3, 70 + (hash(i + t / 150) & 63), 0)
-let heat = max(body, pop)
+let body = b * b / 255 * max(0, 256 - e * 13) / 256 * 7 / 5
+let pop = sel(e < 12 && (hash(i * 31 + t / 150) & 255) < 3, 140 + (hash(i + t / 150) & 127), 0)
+let heat = min(255, max(body, pop))
 rgb(heat, heat * heat / 255 * 7 / 10, heat * heat / 255 * heat / 255 / 4)
