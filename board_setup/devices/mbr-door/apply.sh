@@ -1,25 +1,57 @@
 #!/usr/bin/env bash
-# Install the Falling Leaves formula on MBR-Door and make it the preset the board starts in.
+# Install MBR-Door's fall patterns and make them the board's start-up preset.
 #
 #   board_setup/devices/mbr-door/apply.sh [HOST]       # HOST defaults to mbr-door.local
 #
 # Re-runnable. Run it after `provision`, which replaces the whole filesystem (formulas and presets included).
-# Steps: upload the formula into usermod slot 0 and run it on segment 0 -> save that state as preset 2
-# -> make preset 2 the boot preset (WLED config def.ps).
+#
+# Each formula goes into its own usermod slot and is saved as its own preset (3, 4, 5). Preset 2, "Fall patterns",
+# is a playlist that steps through them. TEST MODE: SECONDS is 5 so every pattern can be seen quickly; to settle
+# on one pattern, set the boot preset to that pattern's preset instead (see Readme: Per-device effects).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 host="${1:-mbr-door.local}"
-preset=2
-name="Falling Leaves"
+SECONDS_PER_PATTERN="${SECONDS_PER_PATTERN:-5}"
+playlist=2
+# slot | file | preset name | preset id
+patterns=(
+  "0|falling_leaves.lsf|Falling Leaves|3"
+  "1|autumn_twinkle.lsf|Autumn Twinkle|4"
+  "2|end_flames.lsf|End Flames|5"
+)
 post() { curl -fsS -m 10 -X POST "http://$host$1" -H 'Content-Type: application/json' -d "$2" >/dev/null; }
 
 curl -fsS -m 10 "http://$host/json/info" >/dev/null || { echo "$host did not answer; is the board on the network?" >&2; exit 1; }
-python3 "$root/tools/lsfx.py" "$host" push 0 "$here/falling_leaves.lsf" --name "$name" --activate
-post /json/state "{\"psave\":$preset,\"n\":\"$name\",\"ib\":true,\"sb\":true}"
-post /json/cfg "{\"def\":{\"ps\":$preset}}"
+
+ids=(); durs=(); trans=()
+for p in "${patterns[@]}"; do
+  IFS='|' read -r slot file name id <<<"$p"
+  python3 "$root/tools/lsfx.py" "$host" push "$slot" "$here/$file" --name "$name" --activate
+  sleep 1   # let the segment settle on the new effect before its state is saved
+  post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":true,\"sb\":true}"
+  ids+=("$id"); durs+=("$((SECONDS_PER_PATTERN * 10))"); trans+=(7)
+done
+
+join() { local IFS=,; echo "$*"; }
+post /json/state "{\"playlist\":{\"ps\":[$(join "${ids[@]}")],\"dur\":[$(join "${durs[@]}")],\"transition\":[$(join "${trans[@]}")],\"repeat\":0,\"r\":false,\"end\":0},\"on\":true,\"o\":true,\"psave\":$playlist,\"n\":\"Fall patterns\"}"
+# This is the exact payload WLED's own web UI sends to save a playlist. "o":true marks it as a playlist; in testing,
+# leaving out "on" and "r" (as an earlier version did) made WLED run the playlist but never write it to presets.json.
+# The write can land a moment later, and starting preset $playlist before it does would load the old content,
+# so wait until presets.json really holds the playlist.
+saved=""
+for _ in $(seq 1 20); do
+  if curl -fsS -m 10 "http://$host/presets.json" | python3 -c '
+import json, sys
+p = json.load(sys.stdin).get(sys.argv[1], {})
+sys.exit(0 if "playlist" in p and p.get("n") == "Fall patterns" else 1)' "$playlist"; then saved=yes; break; fi
+  sleep 1
+done
+[ -n "$saved" ] || { echo "the playlist was not saved as preset $playlist" >&2; exit 1; }
+post /json/cfg "{\"def\":{\"ps\":$playlist}}"
+post /json/state "{\"ps\":$playlist}"   # start it now
 sleep 2
 boot="$(curl -fsS -m 10 "http://$host/json/info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["leds"]["bootps"])')"
-[ "$boot" = "$preset" ] || { echo "boot preset is $boot, expected $preset" >&2; exit 1; }
-echo "done: '$name' is in slot 0, saved as preset $preset and set as the boot preset on $host"
+[ "$boot" = "$playlist" ] || { echo "boot preset is $boot, expected $playlist" >&2; exit 1; }
+echo "done: ${#patterns[@]} patterns saved as presets ${ids[*]}; playlist 'Fall patterns' (preset $playlist, ${SECONDS_PER_PATTERN} s each) is the boot preset on $host"

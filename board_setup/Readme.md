@@ -136,18 +136,27 @@ Adding a chip type or another board is a one-line change to the `LED_TYPES` or `
 
 ## Per-device effects
 
-A device can carry its own LS Formula effect and start in it. These live in `board_setup/devices/<name>/`: a `.lsf` formula plus an `apply.sh` that uploads it, saves it as a preset and makes that preset the boot preset.
+A device can carry its own LS Formula effects and start in them. These live in `board_setup/devices/<name>/`: the `.lsf` formulas plus an `apply.sh` that uploads them, saves each as a preset and sets the boot preset.
 
-| Device | Effect |
-|---|---|
-| `mbr-door` | `falling_leaves.lsf`: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn-coloured leaves (deep orange through amber) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots |
+**`mbr-door`: "Fall patterns".** The boot preset (2) is a playlist that steps through three patterns. **It is in test mode: 5 seconds per pattern**, so you can see all of them. Each pattern is also its own preset.
+
+| Preset | Pattern | Formula |
+|---|---|---|
+| 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `falling_leaves.lsf` |
+| 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `autumn_twinkle.lsf` |
+| 5 | **End Flames**: a gentle crackling fire. Soft flames start at both ends and slowly drift toward the centre (about 3 px/s), with a few small pops near the ends | `end_flames.lsf` |
 
 ```sh
-board_setup/devices/mbr-door/apply.sh                 # defaults to mbr-door.local
-board_setup/devices/mbr-door/apply.sh 192.168.1.50    # or give an address
+board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local
+board_setup/devices/mbr-door/apply.sh 192.168.1.50          # or give an address
+SECONDS_PER_PATTERN=30 board_setup/devices/mbr-door/apply.sh   # a slower rotation
 ```
 
-**Run it after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The formula is a pure function of time, so it needs no frame memory and costs about 2 ms a frame on 50 LEDs.
+To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
+
+**Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). Only the leaves formula is close to the 1024-byte source limit (984 bytes).
+
+**Saving a playlist through the API.** WLED only writes a playlist to `presets.json` when the request is shaped exactly like the one its own web UI sends: `{"playlist":{...,"r":false,...},"on":true,"o":true,"psave":N,"n":"name"}`. Leaving out `on` and `r` made WLED start the playlist but never save it, with no error.
 
 ## First boot without provisioning
 

@@ -1,0 +1,8 @@
+# Thanksgiving twinkle: every pixel slowly swells and fades on its own 6-12 s cycle,
+# and picks a new fall colour (red, orange, amber, gold, some brown) each cycle.
+let pr = 6000 + hash(i) % 6000          # this pixel cycle length, ms
+let tt = t + hash(i + 999) % 12000      # its own phase
+let ph = tt % pr * 256 / pr             # 0..255 through the cycle
+let c = hash(i * 131 + tt / pr)         # colour choice, fixed within a cycle
+let v = scale(sin(ph - 64), 15, 255)    # dimmest at the cycle start/end
+sel(c % 6 == 0, hsv(12, 255, v * 2 / 5), hsv(c % 38, 255, v))

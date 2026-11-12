@@ -1,5 +1,5 @@
 # MBR-Door: leaves fall from the centre out to both ends (~4 s), ~1/s total,
-# 2-3 px, deep orange..amber. Green: 1 dot per 10 px, drifting slowly, drawn
+# 2-3 px, deep orange..amber plus some brown. Green: 1 dot per 10 px, drifting slowly, drawn
 # in front of the leaves (soft edges blend).
 let ct = 2 * i - (n - 1)               # offset from the centre, half px
 let lw = t / 82 - abs(ct)              # leaf coordinate: 49 half px in ~4 s
@@ -12,5 +12,5 @@ let gp = 1280 + (noise(i / 10 * 997, t / 64) - 128) * 8   # green dot, 1/256 px
 let gi = max(0, 256 - abs(i % 10 * 256 - gp) * 3 / 2)
 let gh = 75 + hash(i / 10) % 20
 sel((a & 255) < 83 && lp >= off && lp < off + ln,
-  blend(hsv(6 + (b >> 8) % 27, 255, 255), hsv(gh, 255, 102), min(gi, 255)),
+  blend(sel((b >> 11) % 5 == 0, hsv(12, 255, 110), hsv(6 + (b >> 8) % 27, 255, 255)), hsv(gh, 255, 102), min(gi, 255)),
   hsv(gh, 255, gi * 2 / 5))
