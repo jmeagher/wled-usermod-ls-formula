@@ -10,3 +10,7 @@ platformio_override.ini
 !.gitignore
 !.github/
 !.github/**
+
+# Local WiFi credentials for board_setup/provision.py; never commit.
+.wled.secrets
+!.wled.secrets.example
