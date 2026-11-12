@@ -134,6 +134,21 @@ When it finishes, `provision` waits up to 90 s for `http://<mdns>.local` and che
 
 Adding a chip type or another board is a one-line change to the `LED_TYPES` or `BOARDS` table at the top of `board_setup/provision.py`. `python3 -I -m unittest discover -s tests` covers the validation and the generated files.
 
+## Per-device effects
+
+A device can carry its own LS Formula effect and start in it. These live in `board_setup/devices/<name>/`: a `.lsf` formula plus an `apply.sh` that uploads it, saves it as a preset and makes that preset the boot preset.
+
+| Device | Effect |
+|---|---|
+| `mbr-door` | `falling_leaves.lsf`: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel red, orange and yellow leaves spawn at the middle about four times a second and fall to either end in about 2 s |
+
+```sh
+board_setup/devices/mbr-door/apply.sh                 # defaults to mbr-door.local
+board_setup/devices/mbr-door/apply.sh 192.168.1.50    # or give an address
+```
+
+**Run it after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The formula is a pure function of time, so it needs no frame memory and costs about 2 ms a frame on 50 LEDs.
+
 ## First boot without provisioning
 
 If you flashed only the firmware, WLED has no WiFi credentials and starts its own access point:
