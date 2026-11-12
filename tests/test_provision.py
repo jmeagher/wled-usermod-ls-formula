@@ -5,11 +5,13 @@ Run: python3 -I -m unittest discover -s tests
 import importlib.util
 import json
 import os
+import sys
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 _spec = importlib.util.spec_from_file_location("provision", os.path.join(ROOT, "board_setup", "provision.py"))
 P = importlib.util.module_from_spec(_spec)
+sys.modules["provision"] = P  # dataclasses (py3.12+) looks the module up in sys.modules
 _spec.loader.exec_module(P)
 
 BOARD = P.BOARDS["esp32c6"]
