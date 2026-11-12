@@ -279,19 +279,63 @@ def fs_partition(wled_dir: Path, env: str) -> tuple[int, int]:
     raise ProvisionError(f"no spiffs/LittleFS partition in {csv}")
 
 
-def run_tool(cmd: list[str], what: str) -> None:
+def run_tool(cmd: list[str], what: str) -> str:
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise ProvisionError(f"{what} failed (exit {r.returncode}):\n{r.stdout[-1500:]}{r.stderr[-1500:]}")
+    return r.stdout
+
+
+def esptool_cmd(chip: str, port: str) -> list[str]:
+    esptool = pio_home() / "packages" / "tool-esptoolpy" / "esptool.py"
+    py = pio_home() / "penv" / "bin" / "python"
+    if not (esptool.is_file() and py.is_file()):
+        raise ProvisionError("PlatformIO's esptool not found; build the firmware once with "
+                             "board_setup/c6-install.sh build so PlatformIO installs it")
+    return [str(py), str(esptool), "--chip", chip, "--port", port]
+
+
+def parse_mac(esptool_output: str) -> str | None:
+    """The chip's base MAC (the one WLED reports) as 12 lowercase hex digits, from esptool's connect banner."""
+    m = re.search(r"BASE MAC:\s*((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})", esptool_output) or \
+        re.search(r"^MAC:\s*((?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2})\s*$", esptool_output, re.M)
+    return m.group(1).replace(":", "").lower() if m else None
+
+
+ESP_IMAGE_MAGIC = 0xE9  # first byte of every ESP bootloader / application image; erased flash reads 0xFF
+
+
+def has_image(first_bytes: bytes) -> bool:
+    return len(first_bytes) > 0 and first_bytes[0] == ESP_IMAGE_MAGIC
+
+
+def probe_board(port: str, chip: str) -> str:
+    """Identify the chip and require firmware on it; return its MAC. Read-only (it does reset the chip)."""
+    base = esptool_cmd(chip, port)
+    mac, missing = None, []
+    with tempfile.TemporaryDirectory(prefix="wled-probe-") as tmp:
+        for what, addr in (("bootloader", 0x0), ("WLED application", 0x10000)):
+            out = Path(tmp) / f"{addr:x}.bin"
+            banner = run_tool(base + ["read_flash", f"0x{addr:x}", "4", str(out)], f"esptool read_flash 0x{addr:x}")
+            mac = mac or parse_mac(banner)
+            if not has_image(out.read_bytes()):
+                missing.append(what)
+    if mac is None:
+        raise ProvisionError("could not read the chip's MAC address from esptool")
+    shown = ":".join(mac[i:i + 2] for i in range(0, 12, 2))
+    if missing:
+        raise ProvisionError(f"the board on {port} (MAC {shown}) has no {' and no '.join(missing)}, so it would not run the "
+                             f"configuration. Install the firmware first: board_setup/c6-install.sh flash "
+                             f"(or use `all` instead of `provision`).")
+    print(f"board: ESP32 MAC {shown} on {port}, firmware present")
+    return mac
 
 
 def build_and_flash(files: dict[str, dict], offset: int, size: int, port: str, chip: str) -> None:
     mklittlefs = next(iter(sorted(glob.glob(str(pio_home() / "packages" / "tool-mklittlefs*" / "mklittlefs")))), None)
-    esptool = pio_home() / "packages" / "tool-esptoolpy" / "esptool.py"
-    py = pio_home() / "penv" / "bin" / "python"
-    if not (mklittlefs and esptool.is_file() and py.is_file()):
-        raise ProvisionError("PlatformIO tools (mklittlefs, esptool) not found; build the firmware once with "
-                             "board_setup/c6-install.sh build so PlatformIO installs them")
+    if not mklittlefs:
+        raise ProvisionError("PlatformIO's mklittlefs not found; build the firmware once with "
+                             "board_setup/c6-install.sh build so PlatformIO installs it")
     # TemporaryDirectory is mode 0700 and removed on exit, so the passwords in wsec.json do not linger.
     with tempfile.TemporaryDirectory(prefix="wled-provision-") as tmp:
         root = Path(tmp) / "fs"
@@ -302,8 +346,7 @@ def build_and_flash(files: dict[str, dict], offset: int, size: int, port: str, c
         image = Path(tmp) / "littlefs.bin"
         run_tool([mklittlefs, "-c", str(root), "-b", "4096", "-p", "256", "-s", str(size), str(image)], "mklittlefs")
         print(f"writing {image.stat().st_size // 1024} KiB filesystem image to {port} at 0x{offset:x} ...")
-        run_tool([str(py), str(esptool), "--chip", chip, "--port", port, "write_flash", f"0x{offset:x}", str(image)],
-                 "esptool write_flash")
+        run_tool(esptool_cmd(chip, port) + ["write_flash", f"0x{offset:x}", str(image)], "esptool write_flash")
 
 
 def http_json(url: str, timeout: float = 4.0):
@@ -311,7 +354,7 @@ def http_json(url: str, timeout: float = 4.0):
         return json.load(r)
 
 
-def verify(mdns: str, name: str, strips: list[Strip], wait: float) -> None:
+def verify(mdns: str, name: str, strips: list[Strip], wait: float, mac: str | None = None) -> None:
     """Wait for <mdns>.local to answer and compare what the device reports with what was requested."""
     base = f"http://{mdns}.local"
     deadline, last = time.time() + wait, None
@@ -329,6 +372,9 @@ def verify(mdns: str, name: str, strips: list[Strip], wait: float) -> None:
                              f"that the board joined your WiFi (router client list, or the serial console), or "
                              f"rerun with --no-verify.")
     problems = []
+    if mac and info.get("mac", "").lower() != mac:
+        problems.append(f"answering device has MAC {info.get('mac')}, but the board just written is {mac}: another WLED "
+                        f"device is using the name or address {mdns}.local")
     if info.get("name") != name:
         problems.append(f"name is {info.get('name')!r}, expected {name!r}")
     total = sum(s.length for s in strips)
@@ -392,11 +438,13 @@ def main(argv: list[str] | None = None) -> int:
 
         offset, size = fs_partition(a.wled_dir, a.env)
         port = find_port(a.port)
-        build_and_flash(files, offset, size, port, "esp32c6" if a.board == "esp32c6" else a.board)
+        chip = "esp32c6" if a.board == "esp32c6" else a.board
+        mac = probe_board(port, chip)
+        build_and_flash(files, offset, size, port, chip)
         if a.no_verify or a.no_wifi:
             print("done (not verified over the network).")
         else:
-            verify(a.mdns, a.name, strips, a.verify_wait)
+            verify(a.mdns, a.name, strips, a.verify_wait, mac)
         return 0
     except ProvisionError as e:
         print(f"error: {e}", file=sys.stderr)

@@ -128,7 +128,9 @@ python3 board_setup/provision.py --name Desk --mdns desk --strip pin=7,len=50 --
 
 Each strip becomes one WLED output (LEDs numbered consecutively, strip 1 first) **and** one segment, named `Strip N (GPIO pin)`, in a boot preset (preset 1, applied at power-up). So every strip can be given its own effect and colours from the start.
 
-When it finishes, `provision` waits up to 90 s for `http://<mdns>.local` and checks that the name, LED count and strip settings the board reports match what you asked for. If it cannot reach the board it says so and exits non-zero. The files were still written; look for the board in your router's client list.
+Before writing anything, `provision` reads the chip and prints its MAC address (`board: ESP32 MAC ... firmware present`), so you can see which physical board it is about to change. If the bootloader or the application is missing (a blank board), it stops and tells you to run `flash` first, or to use `all`. `provision` on its own is for boards that already have the firmware.
+
+When it finishes, `provision` waits up to 90 s for `http://<mdns>.local` and checks that the name, LED count and strip settings the board reports match what you asked for, and that the answering device's MAC is the chip it just wrote (so a different WLED device with the same name or address is caught). If it cannot reach the board it says so and exits non-zero. The files were still written; look for the board in your router's client list.
 
 Adding a chip type or another board is a one-line change to the `LED_TYPES` or `BOARDS` table at the top of `board_setup/provision.py`. `python3 -I -m unittest discover -s tests` covers the validation and the generated files.
 

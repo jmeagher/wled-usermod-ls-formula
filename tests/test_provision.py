@@ -73,6 +73,25 @@ class Secrets(unittest.TestCase):
             self.assertEqual(set(P.parse_secrets(f.read())), P.SECRET_KEYS)
 
 
+class BoardProbe(unittest.TestCase):
+    BANNER = ("Connected to ESP32-C6 on /dev/cu.usbmodem1101:\nChip type:  ESP32-C6FH4\n"
+              "MAC:                98:88:e0:ff:fe:71:09:E4\nBASE MAC:           98:88:e0:71:09:E4\nMAC_EXT:            ff:fe\n")
+
+    def test_parse_mac_prefers_base_mac(self):
+        self.assertEqual(P.parse_mac(self.BANNER), "9888e0710 9e4".replace(" ", ""))
+
+    def test_parse_mac_six_byte_chips(self):
+        self.assertEqual(P.parse_mac("Chip is ESP32-D0WD\nMAC: 24:6f:28:aa:bb:cc\nUploading stub"), "246f28aabbcc")
+
+    def test_parse_mac_absent(self):
+        self.assertIsNone(P.parse_mac("A fatal error occurred"))
+
+    def test_has_image(self):
+        self.assertTrue(P.has_image(b"\xe9\x03\x02\x10"))
+        self.assertFalse(P.has_image(b"\xff\xff\xff\xff"))  # erased flash
+        self.assertFalse(P.has_image(b""))
+
+
 class Names(unittest.TestCase):
     def test_mdns(self):
         P.check_names("Desk", "desk-1", None)
