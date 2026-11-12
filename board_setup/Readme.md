@@ -144,7 +144,7 @@ A device can carry its own LS Formula effects and start in them. These live in `
 |---|---|---|
 | 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `falling_leaves.lsf` |
 | 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `autumn_twinkle.lsf` |
-| 5 | **End Flames**: a crackling fire. Flames start at both ends and slowly drift toward the centre (about 3 px/s), with a few small bright pops near the ends | `end_flames.lsf` |
+| 5 | **End Flames**: a crackling fire. The main fire starts at both ends and slowly drifts toward the centre (about 3 px/s); thin wisps peel off it and drift all the way to the centre (the top), fading as they go; a few small bright pops near the ends | `end_flames.lsf` |
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local
@@ -154,7 +154,7 @@ SECONDS_PER_PATTERN=30 board_setup/devices/mbr-door/apply.sh   # a slower rotati
 
 To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
 
-**Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). Only the leaves formula is close to the 1024-byte source limit (984 bytes).
+**Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The leaves (984 bytes) and flames (1009 bytes) formulas are close to the 1024-byte source limit, and comments count.
 
 **Saving a playlist through the API.** WLED only writes a playlist to `presets.json` when the request is shaped exactly like the one its own web UI sends: `{"playlist":{...,"r":false,...},"on":true,"o":true,"psave":N,"n":"name"}`. Leaving out `on` and `r` made WLED start the playlist but never save it, with no error.
 
