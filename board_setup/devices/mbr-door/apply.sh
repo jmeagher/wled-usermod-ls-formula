@@ -30,8 +30,11 @@ ids=(); durs=(); trans=()
 for p in "${patterns[@]}"; do
   IFS='|' read -r slot file name id <<<"$p"
   python3 "$root/tools/lsfx.py" "$host" push "$slot" "$root/examples/$file" --name "$name" --activate
+  # "ib":false ("include brightness") leaves the master brightness out of the preset, so choosing a preset, or the
+  # playlist stepping to the next one, never moves the brightness slider: that stays under manual control.
+  # "sb":true saves the segment bounds. (Do not swap them: with ib:true every preset resets the brightness.)
   sleep 1   # let the segment settle on the new effect before its state is saved
-  post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":true,\"sb\":true}"
+  post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":false,\"sb\":true}"
   sleep 3   # WLED writes the preset asynchronously; a request that arrives before then can drop the write
   ids+=("$id"); durs+=("$((SECONDS_PER_PATTERN * 10))"); trans+=(7)
 done
