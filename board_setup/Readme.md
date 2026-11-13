@@ -152,7 +152,18 @@ Adding a chip type or another board is a one-line change to the `LED_TYPES` or `
 ```sh
 board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
     --strip pin=18,matrix=32x8,bottom=yes,right=yes --strip pin=19,len=50
+board_setup/devices/bar/apply.sh                            # then the preset below (defaults to wled-bar.local)
 ```
+
+`apply.sh` saves preset 1, **"Birdie's Bar"**, as the boot preset. It has three segments and does not store the brightness, so the slider stays manual:
+
+| Segment | What it shows |
+|---|---|
+| 0, **"Birdie's Bar!"**, the 32×8 panel | Scrolling Text in light blue. The text is the segment's name, so rename the segment to change it |
+| 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once |
+| 2, the strand on GPIO 19 | built-in *Colortwinkles* with the palette "Colors Only" (yellow, white, pink): many more sparkles than the panel |
+
+After a reboot the brightness is the board's default (128) until you move the slider.
 
 ## Per-device effects
 
