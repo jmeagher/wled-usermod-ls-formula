@@ -114,6 +114,17 @@ A strip is `pin=N,len=N` plus optional `type=` (default `ws2812`) and `order=` (
 | `pin` | GPIO 0 to 23. GPIO 12 and 13 are refused (they are the USB port); 4, 5, 8, 9 and 15 are strapping pins and give a warning |
 | `len` | number of LEDs. At most 4096 in total and 8 strips on a C6 |
 
+A 2D panel is a strip with `matrix=WxH` instead of `len=` (the LED count is W×H):
+
+| Key | Meaning |
+|---|---|
+| `matrix` | panel size, e.g. `32x8`. It must be the first `--strip` (WLED puts the panel at LED 0 and plain strips after it); only one per board |
+| `vertical` | `yes` (default): LED numbers run down the columns; `no`: along the rows |
+| `serpentine` | `yes` (default): the data line zig-zags; `no`: every column or row runs the same way |
+| `bottom`, `right` | `yes` if LED 0 is at the bottom, or at the right (both default `no`: top-left) |
+
+To find the right flags, light the logical corners (`i` array on segment 0: LEDs 0, W-1, W*(H-1), W*H-1 in red, green, blue, white). They must show up top-left, top-right, bottom-left, bottom-right.
+
 ```sh
 # One strip: 50 WS2812 in GRB order on GPIO 7
 board_setup/c6-install.sh provision --name "Desk" --mdns desk --strip type=ws2812,order=grb,pin=7,len=50
@@ -133,6 +144,15 @@ Before writing anything, `provision` reads the chip and prints its MAC address (
 When it finishes, `provision` waits up to 90 s for `http://<mdns>.local` and checks that the name, LED count and strip settings the board reports match what you asked for, and that the answering device's MAC is the chip it just wrote (so a different WLED device with the same name or address is caught). If it cannot reach the board it says so and exits non-zero. The files were still written; look for the board in your router's client list.
 
 Adding a chip type or another board is a one-line change to the `LED_TYPES` or `BOARDS` table at the top of `board_setup/provision.py`. `python3 -I -m unittest discover -s tests` covers the validation and the generated files.
+
+## Per-device setup
+
+**`bar`**: a 32×8 WS2812 panel on GPIO 18 plus a 50-LED strip on GPIO 19. Its panel starts at the bottom-right (checked with the corner test above):
+
+```sh
+board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
+    --strip pin=18,matrix=32x8,bottom=yes,right=yes --strip pin=19,len=50
+```
 
 ## Per-device effects
 

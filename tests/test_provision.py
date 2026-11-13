@@ -69,6 +69,11 @@ class MatrixStrips(unittest.TestCase):
         self.assertEqual(P.parse_strip("pin=18,matrix=8x8,vertical=no,serpentine=no,bottom=yes", BOARD).matrix,
                          P.Matrix(8, 8, False, False, True, False))
 
+    def test_bar_panel_starts_bottom_right(self):
+        s = P.parse_strip("pin=18,matrix=32x8,bottom=yes,right=yes", BOARD)
+        p = files([s])["cfg.json"]["hw"]["led"]["matrix"]["panels"][0]
+        self.assertEqual((p["b"], p["r"], p["v"], p["s"]), (True, True, True, True))
+
     def test_errors(self):
         for bad in ["pin=18,matrix=32", "pin=18,matrix=0x8", "pin=18,len=100,matrix=32x8", "pin=18,len=9,serpentine=yes"]:
             with self.subTest(bad), self.assertRaises(P.ProvisionError):
