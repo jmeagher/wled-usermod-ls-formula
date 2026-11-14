@@ -88,16 +88,16 @@ For a display with no phone or network in the loop, the usermod can read **one p
 |---|---|
 | **click** | next preset (in id order, wrapping; presets that exist only; powers the display on first if it was off) |
 | **double click** | power on / off |
-| **hold** | brightness goes up in 5 % steps (about four a second) while the button is down, wraps from 100 % back to 5 %, and **stops when you let go** |
-| **double click and hold** (press, release, press again and keep holding) | brightness goes **down** in 5 % steps while the button is down, stops at 5 % (it never turns the display off), and stays where it is when you let go |
+| **hold** | brightness goes **up** while the button is down and **stops where it is when you let go**. It pauses 1.5 s on 100 %, then wraps to 1 % and pauses 1.5 s there too, then climbs again |
+| **double click and hold** (press, release, press again and keep holding) | brightness goes **down** the same way, pauses 1.5 s at 1 % (it never turns the display off), and stays where it is when you let go |
 
-Set it up in **Settings > Usermods > ls_formula**: put the button's GPIO in *button pin* (`-1`, the default, switches the feature off) and save. No reboot is needed. *button active low* is on for a button that connects the pin to ground (the usual wiring; the internal pull-up is used, so no resistor is needed); turn it off for a button that connects the pin to 3.3 V. *brightness step* is the step size in percent (1 to 50).
+Set it up in **Settings > Usermods > ls_formula**: put the button's GPIO in *button pin* (`-1`, the default, switches the feature off) and save. No reboot is needed. *button active low* is on for a button that connects the pin to ground (the usual wiring; the internal pull-up is used, so no resistor is needed); turn it off for a button that connects the pin to 3.3 V. *brightness step* is the size of a step in percent (1 to 50). The levels are 1, 2, 3 and 4 %, then every step (with the default of 5: 5, 10, 15, ... 100 %); 100 % is always a level. A step of 10 gives 1, 2, 3, 4, 10, 20, ... and a step of 1 gives every percent. Steps come about four a second.
 
 - The pin must not be one WLED already uses (a button in *Time & Macros*, an LED data pin, ...). If it is taken, the usermod leaves it alone and `lsf.button.ok` in the state JSON stays `false`.
 - A click that turns into a hold is not a click: pressing and holding right after a click is the dimming hold.
 - A single click is acted on about 0.35 s after the release: that is how the double click is told apart.
 - A button already held when the board starts is ignored until it is released (so holding BOOT during a reset does nothing).
-- The timings are build flags: `LSF_BTN_DEBOUNCE_MS` (30), `LSF_BTN_DOUBLE_MS` (350), `LSF_BTN_HOLD_MS` (500), `LSF_BTN_STEP_MS` (250).
+- The timings are build flags: `LSF_BTN_DEBOUNCE_MS` (30), `LSF_BTN_DOUBLE_MS` (350), `LSF_BTN_HOLD_MS` (500), `LSF_BTN_STEP_MS` (250), `LSF_BTN_END_HOLD_MS` (1500, the pause on the brightest and dimmest level).
 - Everything is local: it changes this device only and needs no WiFi. The gesture logic is in [`lsf_button.h`](lsf_button.h) and is tested on the desktop.
 
 ## Documentation

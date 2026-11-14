@@ -231,7 +231,7 @@ class LsFormulaUsermod : public Usermod {
     applyPreset(id, CALL_MODE_BUTTON_PRESET);
   }
 
-  void stepBrightness(bool up) {
+  void stepBrightness(bool up, uint32_t now) {
     if (up) {
       if (bri == 0) {
         toggleOnOff();                                     // power on, then start from the lowest step
@@ -242,20 +242,22 @@ class LsFormulaUsermod : public Usermod {
     } else {
       if (bri == 0) return;                                // nothing to dim; dimming never turns the display off
       const uint8_t v = lsfPrevBrightness(bri, briStepPct);
-      if (v == bri) return;                                // already at the lowest step
+      if (v == bri) return;                                // already at the lowest level
       bri = v;
     }
     stateUpdated(CALL_MODE_BUTTON);
+    if (lsfAtBrightnessEnd(bri)) btn.delayNextStep(now, LSF_BTN_END_HOLD_MS);   // dwell on the brightest / dimmest level
   }
 
   void pollButton() {
     if (btnOwned < 0) return;
     const bool pressed = (digitalRead(btnOwned) == LOW) == btnActiveLow;
-    switch (btn.poll(pressed, millis())) {
+    const uint32_t now = millis();
+    switch (btn.poll(pressed, now)) {
       case LSFB_CLICK:     nextPreset(); break;
       case LSFB_DOUBLE:    toggleOnOff(); stateUpdated(CALL_MODE_BUTTON); break;
-      case LSFB_HOLD_UP:   stepBrightness(true); break;
-      case LSFB_HOLD_DOWN: stepBrightness(false); break;
+      case LSFB_HOLD_UP:   stepBrightness(true, now); break;
+      case LSFB_HOLD_DOWN: stepBrightness(false, now); break;
       default: break;
     }
   }

@@ -4,9 +4,11 @@
 //   click        -> next preset
 //   double click -> power on / off
 //   hold         -> brightness steps up every LSF_BTN_STEP_MS while the button is down, wrapping from the top
-//                   back to the lowest step; releasing the button stops it
+//                   back to the lowest level; releasing the button stops it
 //   double click and hold (press, release, press again and keep holding)
-//                -> brightness steps down the same way, stopping at the lowest step; release stops it
+//                -> brightness steps down the same way, stopping at the lowest level; release stops it
+// The levels are 1, 2, 3, 4 %, then every `step` percent (5, 10, ... 100 for the default step of 5). The caller
+// pauses LSF_BTN_END_HOLD_MS on the brightest and dimmest level with delayNextStep().
 //
 // ls_formula.cpp feeds this the pin level and acts on the events.
 #pragma once
@@ -23,6 +25,9 @@
 #endif
 #ifndef LSF_BTN_STEP_MS
 #define LSF_BTN_STEP_MS 250       // time between brightness steps while held
+#endif
+#ifndef LSF_BTN_END_HOLD_MS
+#define LSF_BTN_END_HOLD_MS 1500  // pause on the brightest and the dimmest level while held
 #endif
 
 enum LsfBtnEvent : uint8_t {
@@ -77,16 +82,19 @@ class LsfButton {
       if (!holding_ && (uint32_t)(now - downAt_) >= LSF_BTN_HOLD_MS) {
         holding_ = true;
         clicks_ = 0;            // a press that turns into a hold cancels a pending click
-        stepAt_ = now;
+        nextAt_ = now + LSF_BTN_STEP_MS;
         return second_ ? LSFB_HOLD_DOWN : LSFB_HOLD_UP;
       }
-      if (holding_ && (uint32_t)(now - stepAt_) >= LSF_BTN_STEP_MS) {
-        stepAt_ = now;
+      if (holding_ && (int32_t)(now - nextAt_) >= 0) {
+        nextAt_ = now + LSF_BTN_STEP_MS;
         return second_ ? LSFB_HOLD_DOWN : LSFB_HOLD_UP;
       }
     }
     return LSFB_NONE;
   }
+
+  // Call right after handling a hold step to make the next one come `ms` from `now` instead of one step time.
+  void delayNextStep(uint32_t now, uint32_t ms) { nextAt_ = now + ms; }
 
   bool holding() const { return holding_; }
   void reset() { *this = LsfButton(); }
@@ -94,33 +102,45 @@ class LsfButton {
  private:
   bool started_ = false, waitRelease_ = false, down_ = false, holding_ = false, second_ = false;
   uint8_t clicks_ = 0;
-  uint32_t edgeAt_ = 0, downAt_ = 0, upAt_ = 0, stepAt_ = 0;
+  uint32_t edgeAt_ = 0, downAt_ = 0, upAt_ = 0, nextAt_ = 0;
 };
 
-// Next brightness in `stepPct` percent steps: 5% -> 10% -> ... -> 100% -> back to the first step. From off (0) the
-// first step is returned. The result is never 0 (that would be "off") and 100% is exactly 255.
-inline uint8_t lsfNextBrightness(uint8_t bri, uint8_t stepPct) {
-  if (stepPct < 1) stepPct = 1;
-  if (stepPct > 50) stepPct = 50;
-  const unsigned pct = bri == 0 ? 0 : (unsigned(bri) * 100 + 127) / 255;   // nearest percent
-  unsigned next = (pct / stepPct + 1) * stepPct;                            // the step above the current one
-  if (next > 100) next = stepPct;
-  const unsigned v = (next * 255 + 50) / 100;
+// Brightness levels, in percent: 1, 2, 3, 4 (only those below the step size), then every `stepPct`: 5, 10, ... 100 for the
+// default step of 5. `stepPct` is limited to 1..50.
+inline unsigned lsfPct(uint8_t bri) { return (unsigned(bri) * 100 + 127) / 255; }   // nearest percent (0 for bri 0)
+inline uint8_t lsfBriFromPct(unsigned pct) {
+  const unsigned v = (pct * 255 + 50) / 100;
   return uint8_t(v < 1 ? 1 : v > 255 ? 255 : v);
+}
+inline unsigned lsfClampStep(uint8_t stepPct) { return stepPct < 1 ? 1 : stepPct > 50 ? 50 : stepPct; }
+
+// The level above `bri`: 1% -> 2% -> 3% -> 4% -> 5% -> 10% -> ... -> 100% -> back to 1%. From off (0) it is 1%.
+inline uint8_t lsfNextBrightness(uint8_t bri, uint8_t stepPct) {
+  const unsigned step = lsfClampStep(stepPct);
+  const unsigned fine = step - 1 < 4 ? step - 1 : 4;       // the 1..4 % levels that sit below the first step
+  const unsigned pct = bri == 0 ? 0 : lsfPct(bri);
+  unsigned next = pct < fine ? pct + 1 : (pct / step + 1) * step;
+  if (pct >= 100) next = 1;                                 // past the top: wrap to the lowest level
+  else if (next > 100) next = 100;                          // 100 % is always a level, even if the step does not divide it
+  return lsfBriFromPct(next);
 }
 
-// One step down: 100% -> 95% -> ... -> 5%, and it stays at the lowest step (it never turns the display off). The
-// current value is first rounded to the nearest percent, so 50% (128) goes to 45% (115). From off (0) it stays 0.
+// The level below `bri`: 100% -> 95% -> ... -> 5% -> 4% -> 3% -> 2% -> 1%, and it stays at 1% (it never turns the display
+// off). From off (0) it stays 0.
 inline uint8_t lsfPrevBrightness(uint8_t bri, uint8_t stepPct) {
   if (bri == 0) return 0;
-  if (stepPct < 1) stepPct = 1;
-  if (stepPct > 50) stepPct = 50;
-  const unsigned pct = (unsigned(bri) * 100 + 127) / 255;
-  unsigned prev = (pct % stepPct == 0) ? (pct > stepPct ? pct - stepPct : stepPct) : (pct / stepPct) * stepPct;
-  if (prev < stepPct) prev = stepPct;
-  const unsigned v = (prev * 255 + 50) / 100;
-  return uint8_t(v < 1 ? 1 : v > 255 ? 255 : v);
+  const unsigned step = lsfClampStep(stepPct);
+  const unsigned fine = step - 1 < 4 ? step - 1 : 4;
+  const unsigned pct = lsfPct(bri);
+  unsigned prev;
+  if (pct > step) prev = (pct % step == 0) ? pct - step : (pct / step) * step;
+  else prev = pct > 1 ? (pct - 1 < fine ? pct - 1 : fine) : 1;   // at or below the first step: walk the fine levels
+  if (prev < 1) prev = 1;
+  return lsfBriFromPct(prev);
 }
+
+// True on the brightest and the dimmest level: where a hold pauses.
+inline bool lsfAtBrightnessEnd(uint8_t bri) { return bri > 0 && (lsfPct(bri) >= 100 || lsfPct(bri) <= 1); }
 
 // The preset ids (1..250) that exist, kept as a bitmap so "the next one after N" is cheap and always in order.
 class LsfIdSet {

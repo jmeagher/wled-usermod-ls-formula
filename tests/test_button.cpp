@@ -143,52 +143,140 @@ static void testSlowPolling() {
 }
 
 static void testBrightnessSteps() {
-  CHECK_EQ(lsfNextBrightness(0, 5), 13);               // from off: the first step (5 %)
+  CHECK_EQ(lsfNextBrightness(0, 5), 3);                // from off: the lowest level, 1 %
+  CHECK_EQ(lsfNextBrightness(3, 5), 5);                // 1 % -> 2 %
+  CHECK_EQ(lsfNextBrightness(5, 5), 8);                // 2 % -> 3 %
+  CHECK_EQ(lsfNextBrightness(8, 5), 10);               // 3 % -> 4 %
+  CHECK_EQ(lsfNextBrightness(10, 5), 13);              // 4 % -> 5 %
   CHECK_EQ(lsfNextBrightness(13, 5), 26);              // 5 % -> 10 %
   CHECK_EQ(lsfNextBrightness(128, 5), 140);            // 50 % -> 55 %
   CHECK_EQ(lsfNextBrightness(242, 5), 255);            // 95 % -> 100 %
-  CHECK_EQ(lsfNextBrightness(255, 5), 13);             // wraps to the first step
-  // 20 presses from the lowest step walk every 5 % level and come back around
-  unsigned b = 13; int n = 0;
-  do { b = lsfNextBrightness(uint8_t(b), 5); n++; } while (b != 13 && n < 100);
-  CHECK_EQ(n, 20);
-  // always strictly increasing until the wrap, never 0, for every starting value and several step sizes
-  const uint8_t steps[] = {1, 5, 10, 25, 50, 0, 200};
-  for (uint8_t st : steps) {
+  CHECK_EQ(lsfNextBrightness(255, 5), 3);              // wraps to 1 %
+  // 24 levels (1, 2, 3, 4, 5, 10, ... 100 %): 24 presses from the lowest come back around
+  unsigned b = 3; int n = 0;
+  do { b = lsfNextBrightness(uint8_t(b), 5); n++; } while (b != 3 && n < 100);
+  CHECK_EQ(n, 24);
+  // different step sizes: the 1..4 % levels exist only below the first step
+  CHECK_EQ(lsfNextBrightness(3, 10), 5);   CHECK_EQ(lsfNextBrightness(10, 10), 26);   // 1 -> 2 %, 4 % -> 10 %
+  CHECK_EQ(lsfNextBrightness(8, 3), 15);   // step 3: levels 1, 2, 3, 6, 9, ...: 3 % -> 6 %
+  CHECK_EQ(lsfNextBrightness(252, 3), 255); // 99 % -> 100 % even though 3 does not divide 100
+  CHECK_EQ(lsfNextBrightness(0, 1), 3);    CHECK_EQ(lsfNextBrightness(3, 1), 5);          // step 1: 1, 2, 3 ...
+  const uint8_t steps[] = {1, 3, 5, 10, 25, 50, 0, 200};
+  for (uint8_t st : steps)
     for (unsigned v = 0; v <= 255; v++) {
       unsigned r = lsfNextBrightness(uint8_t(v), st);
       CHECK(r >= 1);
-      CHECK(r > v || r < v);                          // always changes
+      CHECK(r != v || v == 255 || v == 0);             // always moves (the single value that cannot is none)
     }
-  }
-  for (unsigned v = 1; v < 255; v++) CHECK(lsfNextBrightness(uint8_t(v), 5) > v || lsfNextBrightness(uint8_t(v), 5) == 13);
 }
 
 static void testBrightnessDown() {
   CHECK_EQ(lsfPrevBrightness(255, 5), 242);            // 100 % -> 95 %
   CHECK_EQ(lsfPrevBrightness(128, 5), 115);            // 50 % -> 45 %
   CHECK_EQ(lsfPrevBrightness(26, 5), 13);              // 10 % -> 5 %
-  CHECK_EQ(lsfPrevBrightness(13, 5), 13);              // stays at the lowest step, never off
-  CHECK_EQ(lsfPrevBrightness(1, 5), 13);               // below the lowest step: the lowest step
+  CHECK_EQ(lsfPrevBrightness(13, 5), 10);              // 5 % -> 4 %
+  CHECK_EQ(lsfPrevBrightness(10, 5), 8);               // 4 % -> 3 %
+  CHECK_EQ(lsfPrevBrightness(8, 5), 5);                // 3 % -> 2 %
+  CHECK_EQ(lsfPrevBrightness(5, 5), 3);                // 2 % -> 1 %
+  CHECK_EQ(lsfPrevBrightness(3, 5), 3);                // stays at 1 %, never off
+  CHECK_EQ(lsfPrevBrightness(1, 5), 3);                // below 1 %: 1 %
   CHECK_EQ(lsfPrevBrightness(0, 5), 0);                // off stays off
-  CHECK_EQ(lsfPrevBrightness(130, 5), 128);            // 51 %: the step below it is 50 %
-  // walking down from 100 % reaches the floor in 19 presses and every value is a step lower than the last
+  CHECK_EQ(lsfPrevBrightness(130, 5), 128);            // 51 %: the level below it is 50 %
+  CHECK_EQ(lsfPrevBrightness(26, 10), 10);             // step 10: 10 % -> 4 % (no 5..9 %)
+  // walking down from 100 % reaches 1 % in 23 presses, strictly decreasing
   unsigned b = 255; int n = 0;
   while (lsfPrevBrightness(uint8_t(b), 5) < b) { b = lsfPrevBrightness(uint8_t(b), 5); n++; }
-  CHECK_EQ(n, 19);
-  CHECK_EQ(b, 13);
-  // up then down returns to the same level for every 5 % step
-  for (unsigned pct = 5; pct < 100; pct += 5) {
-    unsigned v = (pct * 255 + 50) / 100;
-    CHECK_EQ(lsfPrevBrightness(lsfNextBrightness(uint8_t(v), 5), 5), v);
+  CHECK_EQ(n, 23);
+  CHECK_EQ(b, 3);
+  // down is the exact inverse of up on every level, for several step sizes
+  const uint8_t steps[] = {1, 3, 5, 10, 50};
+  for (uint8_t st : steps) {
+    unsigned v = lsfNextBrightness(0, st);             // 1 %
+    for (int k = 0; k < 200 && v != 255; k++) {
+      unsigned up = lsfNextBrightness(uint8_t(v), st);
+      CHECK(up > v);
+      CHECK_EQ(lsfPrevBrightness(uint8_t(up), st), v);
+      v = up;
+    }
+    CHECK_EQ(v, 255);
   }
-  const uint8_t steps[] = {1, 5, 10, 50, 0, 200};
-  for (uint8_t st : steps)
+  const uint8_t odd[] = {0, 200};
+  for (uint8_t st : odd)
     for (unsigned v = 0; v <= 255; v++) {
       unsigned r = lsfPrevBrightness(uint8_t(v), st);
-      CHECK((v == 0 && r == 0) || (v > 0 && r >= 1));  // never turns a lit display off
-      CHECK(r <= (v > 0 ? 255u : 0u));
+      CHECK((v == 0 && r == 0) || (v > 0 && r >= 1 && r <= 255));
     }
+}
+
+static void testBrightnessEnds() {
+  CHECK(lsfAtBrightnessEnd(255));                      // 100 %
+  CHECK(lsfAtBrightnessEnd(3));                        // 1 %
+  CHECK(lsfAtBrightnessEnd(1));
+  CHECK(!lsfAtBrightnessEnd(0));                       // off is not a level
+  CHECK(!lsfAtBrightnessEnd(5));                       // 2 %
+  CHECK(!lsfAtBrightnessEnd(242));                     // 95 %
+  CHECK(!lsfAtBrightnessEnd(128));
+}
+
+// A held button where the "app" pauses on the ends, like ls_formula.cpp does.
+static void testHoldPausesAtTheEnds() {
+  LsfButton b;
+  uint8_t bri = 242;                                   // 95 %: one step below the top
+  std::vector<std::pair<uint32_t, unsigned>> seen;     // (time, brightness after the step)
+  for (uint32_t t = 0; t <= 8000; t++) {
+    const bool pressed = t >= 100 && t < 7000;
+    LsfBtnEvent e = b.poll(pressed, 5000 + t);
+    if (e == LSFB_HOLD_UP) {
+      bri = lsfNextBrightness(bri, 5);
+      seen.push_back({t, bri});
+      if (lsfAtBrightnessEnd(bri)) b.delayNextStep(5000 + t, LSF_BTN_END_HOLD_MS);
+    }
+  }
+  // 600: 95 -> 100 %  (pause 1.5 s)  ->  2100: wraps to 1 % (pause 1.5 s)  ->  3600: 2 %  ->  3850: 3 %
+  CHECK(seen.size() >= 5);
+  CHECK_EQ(seen[0].second, 255);
+  CHECK_EQ(seen[1].first - seen[0].first, LSF_BTN_END_HOLD_MS);   // held at 100 %
+  CHECK_EQ(seen[1].second, 3);                                    // then wrapped to 1 %
+  CHECK_EQ(seen[2].first - seen[1].first, LSF_BTN_END_HOLD_MS);   // held at 1 %
+  CHECK_EQ(seen[2].second, 5);
+  CHECK_EQ(seen[3].first - seen[2].first, LSF_BTN_STEP_MS);       // normal pace in between
+  CHECK_EQ(seen[3].second, 8);
+}
+
+static void testHoldDownPausesAtTheBottom() {
+  LsfButton b;
+  uint8_t bri = 13;                                    // 5 %
+  std::vector<std::pair<uint32_t, unsigned>> seen;
+  for (uint32_t t = 0; t <= 6000; t++) {
+    // press, release, press again and hold
+    const bool pressed = (t >= 100 && t < 160) || (t >= 300 && t < 5000);
+    LsfBtnEvent e = b.poll(pressed, 1000 + t);
+    if (e == LSFB_HOLD_DOWN) {
+      const uint8_t v = lsfPrevBrightness(bri, 5);
+      if (v == bri) continue;                          // already at the floor: no change, nothing to pause
+      bri = v;
+      seen.push_back({t, bri});
+      if (lsfAtBrightnessEnd(bri)) b.delayNextStep(1000 + t, LSF_BTN_END_HOLD_MS);
+    }
+  }
+  CHECK_EQ(seen.size(), 4u);                           // 5 % -> 4, 3, 2, 1 %, then it stays
+  CHECK_EQ(seen[0].second, 10); CHECK_EQ(seen[1].second, 8); CHECK_EQ(seen[2].second, 5); CHECK_EQ(seen[3].second, 3);
+  CHECK_EQ(seen[1].first - seen[0].first, LSF_BTN_STEP_MS);
+}
+
+static void testDelayAcrossClockWrap() {
+  LsfButton b;
+  const uint32_t t0 = 0xFFFFFFFFu - 700;               // the clock wraps during the 1.5 s pause
+  int steps = 0; uint32_t first = 0, second = 0;
+  for (uint32_t t = 0; t <= 4000; t++) {
+    LsfBtnEvent e = b.poll(t >= 100 && t < 3900, t0 + t);
+    if (e == LSFB_HOLD_UP) {
+      steps++;
+      if (steps == 1) { first = t; b.delayNextStep(t0 + t, LSF_BTN_END_HOLD_MS); }
+      if (steps == 2) second = t;
+    }
+  }
+  CHECK_EQ(second - first, LSF_BTN_END_HOLD_MS);
 }
 
 static void testIdSet() {
@@ -216,7 +304,8 @@ int main() {
   testHoldStepsThenStopsOnRelease(); testShortPressJustUnderHoldIsClick(); testDoubleClickAndHoldDims();
   testSingleHoldAfterAnIdleGapStillBrightens(); testDimThenUpDirectionsDoNotLeak();
   testBounceIsIgnored(); testHeldAtBootIsIgnoredUntilReleased(); testClockWrap(); testSlowPolling();
-  testBrightnessSteps(); testBrightnessDown(); testIdSet();
+  testBrightnessSteps(); testBrightnessDown(); testBrightnessEnds(); testHoldPausesAtTheEnds();
+  testHoldDownPausesAtTheBottom(); testDelayAcrossClockWrap(); testIdSet();
   if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
   std::printf("button tests: ok\n");
   return 0;
