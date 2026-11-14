@@ -1,0 +1,16 @@
+# 8 sparkles at once on a 256-pixel panel; use as an overlay (blend mode Add).
+# 8 interleaved groups (i % 8); each shows one random-pixel sparkle per ~1.1 s round,
+# random yellow / white / pink shade each time.
+let g = i % 8
+let per = 1100
+let tt = t + g * 137
+let cyc = tt / per
+let f = tt % per * 255 / per
+let q = hash(g * 131 + cyc * 7 + 17)
+let v = min(sin(64 + f / 2), f * 6)
+let r = q / 32 % 3
+let sh = q / 96 % 64
+let c = sel(r == 0, hsv(30 + sh / 5, 255 - sh, 255),
+        sel(r == 1, hsv(sh * 4, sh / 2, 255),
+        hsv(226 + sh / 6, 70 + sh * 2, 255)))
+sel(q % 32 == i / 8, dim(c, v), 0)

@@ -64,8 +64,23 @@ BOARDS = {
 }
 
 
+_TRUE = ("1", "yes", "true", "on")
+
+
 class ProvisionError(Exception):
     """A problem with the user's input or environment, reported without a traceback."""
+
+
+@dataclass(frozen=True)
+class Matrix:
+    """One 2D panel (WLED cfg hw.led.matrix.panels[0]). Defaults suit the common 32x8 WS2812 panel:
+    first LED top-left, columns run top to bottom and the data line zig-zags."""
+    width: int
+    height: int
+    vertical: bool = True
+    serpentine: bool = True
+    bottom_start: bool = False
+    right_start: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,7 @@ class Strip:
     pin: int
     length: int
     reversed: bool = False
+    matrix: "Matrix | None" = None   # set when this strip is a 2D panel
 
     @property
     def type_id(self) -> int:
@@ -96,10 +112,25 @@ def parse_strip(spec: str, board: dict) -> Strip:
         if key in fields:
             raise ProvisionError(f"--strip {spec!r}: {key!r} given twice")
         fields[key] = value
-    allowed = {"type", "order", "pin", "len", "reversed"}
+    allowed = {"type", "order", "pin", "len", "reversed", "matrix", "vertical", "serpentine", "bottom", "right"}
     unknown = set(fields) - allowed
     if unknown:
         raise ProvisionError(f"--strip {spec!r}: unknown key(s) {sorted(unknown)}; use {sorted(allowed)}")
+    matrix = None
+    if "matrix" in fields:
+        m = re.fullmatch(r"(\d+)x(\d+)", fields["matrix"])
+        if not m or int(m[1]) < 1 or int(m[2]) < 1:
+            raise ProvisionError(f"--strip {spec!r}: matrix= must look like 32x8 (width x height)")
+        w, h = int(m[1]), int(m[2])
+        if "len" in fields and fields["len"] != str(w * h):
+            raise ProvisionError(f"--strip {spec!r}: len={fields['len']} does not match matrix {w}x{h} = {w * h} LEDs")
+        fields["len"] = str(w * h)
+        flag = lambda k, d: fields[k] in _TRUE if k in fields else d
+        matrix = Matrix(w, h, flag("vertical", True), flag("serpentine", True), flag("bottom", False), flag("right", False))
+    else:
+        stray = {"vertical", "serpentine", "bottom", "right"} & set(fields)
+        if stray:
+            raise ProvisionError(f"--strip {spec!r}: {sorted(stray)} only apply together with matrix=WxH")
     for required in ("pin", "len"):
         if required not in fields:
             raise ProvisionError(f"--strip {spec!r}: missing {required}=")
@@ -120,8 +151,8 @@ def parse_strip(spec: str, board: dict) -> Strip:
         raise ProvisionError(f"--strip {spec!r}: pin {pin} is outside GPIO 0..{board['gpio_max']} on this board")
     if pin in board["reserved"]:
         raise ProvisionError(f"--strip {spec!r}: GPIO {pin} is the {board['reserved'][pin]} line of the USB port")
-    reversed_ = fields.get("reversed", "no") in ("1", "yes", "true", "on")
-    return Strip(type_name, order, pin, length, reversed_)
+    reversed_ = fields.get("reversed", "no") in _TRUE
+    return Strip(type_name, order, pin, length, reversed_, matrix)
 
 
 def validate_strips(strips: list[Strip], board: dict) -> list[str]:
@@ -134,6 +165,11 @@ def validate_strips(strips: list[Strip], board: dict) -> list[str]:
     dupes = sorted({p for p in pins if pins.count(p) > 1})
     if dupes:
         raise ProvisionError(f"GPIO {dupes} used by more than one strip (one data pin drives one strip)")
+    matrices = [i for i, s in enumerate(strips) if s.matrix]
+    if len(matrices) > 1:
+        raise ProvisionError("only one matrix= strip is supported")
+    if matrices and matrices[0] != 0:
+        raise ProvisionError("the matrix= strip must be listed first (WLED places the 2D panel at LED 0; other strips follow it)")
     total = sum(s.length for s in strips)
     if total > board["max_leds"]:
         raise ProvisionError(f"{total} LEDs in total exceeds the limit of {board['max_leds']} for this board")
@@ -222,10 +258,18 @@ def build_files(*, name: str, mdns: str, ap_ssid: str | None, secrets: dict[str,
     for i, s in enumerate(strips):
         ins.append({"start": start, "len": s.length, "pin": [s.pin], "order": COLOR_ORDERS[s.order],
                     "rev": s.reversed, "skip": 0, "type": s.type_id, "ref": False})
-        segs.append({"id": i, "start": start, "stop": start + s.length, "n": f"Strip {i + 1} (GPIO {s.pin})",
-                     "on": True})
+        seg = {"id": i, "start": start, "stop": start + s.length, "n": f"Strip {i + 1} (GPIO {s.pin})", "on": True}
+        if s.matrix:  # a 2D segment is addressed in x/y, not by LED index
+            seg.update(stop=s.matrix.width, startY=0, stopY=s.matrix.height, n=f"Matrix {s.matrix.width}x{s.matrix.height} (GPIO {s.pin})")
+        segs.append(seg)
         start += s.length
     cfg["hw"] = {"led": {"total": start, "ins": ins}}
+    for s in strips:
+        if s.matrix:
+            m = s.matrix
+            cfg["hw"]["led"]["matrix"] = {"mpc": 1, "panels": [{
+                "b": m.bottom_start, "r": m.right_start, "v": m.vertical, "s": m.serpentine,
+                "x": 0, "y": 0, "h": m.height, "w": m.width}]}
     # Boot into preset 1, which has one segment per strip so each can be controlled on its own.
     cfg["def"] = {"ps": 1, "on": True, "bri": 128}
     presets = {"0": {}, "1": {"n": "Boot", "on": True, "bri": 128, "seg": segs}}
