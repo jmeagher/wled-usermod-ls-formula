@@ -64,7 +64,7 @@ static void testHoldStepsThenStopsOnRelease() {
   CHECK_EQ(count(ev, LSFB_HOLD_END), 1);
   CHECK(ev.back().e == LSFB_HOLD_END);
   CHECK_EQ(ev.back().at, 2000);
-  int steps = count(ev, LSFB_HOLD_STEP);
+  int steps = count(ev, LSFB_HOLD_UP);
   // first step at 500 ms, then one per 250 ms: 500, 750, ..., 1750 (+ possibly 2000 is the release instead)
   CHECK_EQ(steps, 6);
   CHECK_EQ(ev[0].at, 100 + LSF_BTN_HOLD_MS);
@@ -75,15 +75,37 @@ static void testHoldStepsThenStopsOnRelease() {
 static void testShortPressJustUnderHoldIsClick() {
   auto ev = run({{100, true}, {100 + LSF_BTN_HOLD_MS - 20, false}}, 2000);
   CHECK_EQ(count(ev, LSFB_CLICK), 1);
-  CHECK_EQ(count(ev, LSFB_HOLD_STEP), 0);
+  CHECK_EQ(count(ev, LSFB_HOLD_UP), 0);
 }
 
-static void testClickThenHoldCancelsTheClick() {
-  auto ev = run({{100, true}, {160, false}, {300, true}, {1200, false}}, 3000);
+static void testDoubleClickAndHoldDims() {
+  // press, release, press again and keep holding: steps DOWN, no click, no double click, and release stops it
+  auto ev = run({{100, true}, {160, false}, {300, true}, {2000, false}}, 4000);
   CHECK_EQ(count(ev, LSFB_CLICK), 0);
   CHECK_EQ(count(ev, LSFB_DOUBLE), 0);
-  CHECK(count(ev, LSFB_HOLD_STEP) >= 2);
+  CHECK_EQ(count(ev, LSFB_HOLD_UP), 0);
   CHECK_EQ(count(ev, LSFB_HOLD_END), 1);
+  CHECK_EQ(count(ev, LSFB_HOLD_DOWN), 5);              // at 800, 1050, 1300, 1550, 1800; the release at 2000 stops it
+  CHECK_EQ(ev[0].at, 300 + LSF_BTN_HOLD_MS);
+  CHECK_EQ(ev[1].at - ev[0].at, LSF_BTN_STEP_MS);
+  CHECK(ev.back().e == LSFB_HOLD_END);
+  CHECK_EQ(ev.back().at, 2000);
+}
+
+static void testSingleHoldAfterAnIdleGapStillBrightens() {
+  // a press long after an earlier click is a fresh single hold (up), not a "second press"
+  auto ev = run({{100, true}, {160, false}, {900, true}, {2000, false}}, 4000);
+  CHECK_EQ(count(ev, LSFB_CLICK), 1);
+  CHECK(count(ev, LSFB_HOLD_UP) >= 3);
+  CHECK_EQ(count(ev, LSFB_HOLD_DOWN), 0);
+}
+
+static void testDimThenUpDirectionsDoNotLeak() {
+  // after a dimming hold, the next plain hold brightens again
+  auto ev = run({{100, true}, {160, false}, {300, true}, {1500, false}, {2500, true}, {3600, false}}, 6000);
+  CHECK(count(ev, LSFB_HOLD_DOWN) >= 3);
+  CHECK(count(ev, LSFB_HOLD_UP) >= 3);
+  CHECK_EQ(count(ev, LSFB_HOLD_END), 2);
 }
 
 static void testBounceIsIgnored() {
@@ -107,7 +129,7 @@ static void testClockWrap() {
   auto ev = run({{100, true}, {160, false}, {300, true}, {360, false}}, 2000, t0);
   CHECK_EQ(count(ev, LSFB_DOUBLE), 1);
   auto hold = run({{100, true}, {1500, false}}, 3000, t0);
-  CHECK(count(hold, LSFB_HOLD_STEP) >= 3);
+  CHECK(count(hold, LSFB_HOLD_UP) >= 3);
   CHECK_EQ(count(hold, LSFB_HOLD_END), 1);
 }
 
@@ -116,7 +138,7 @@ static void testSlowPolling() {
   auto ev = run({{100, true}, {200, false}, {400, true}, {500, false}}, 3000, 1000, false, 20);
   CHECK_EQ(count(ev, LSFB_DOUBLE), 1);
   auto hold = run({{100, true}, {1700, false}}, 3000, 1000, false, 20);
-  CHECK(count(hold, LSFB_HOLD_STEP) >= 4);
+  CHECK(count(hold, LSFB_HOLD_UP) >= 4);
   CHECK_EQ(count(hold, LSFB_HOLD_END), 1);
 }
 
@@ -142,6 +164,33 @@ static void testBrightnessSteps() {
   for (unsigned v = 1; v < 255; v++) CHECK(lsfNextBrightness(uint8_t(v), 5) > v || lsfNextBrightness(uint8_t(v), 5) == 13);
 }
 
+static void testBrightnessDown() {
+  CHECK_EQ(lsfPrevBrightness(255, 5), 242);            // 100 % -> 95 %
+  CHECK_EQ(lsfPrevBrightness(128, 5), 115);            // 50 % -> 45 %
+  CHECK_EQ(lsfPrevBrightness(26, 5), 13);              // 10 % -> 5 %
+  CHECK_EQ(lsfPrevBrightness(13, 5), 13);              // stays at the lowest step, never off
+  CHECK_EQ(lsfPrevBrightness(1, 5), 13);               // below the lowest step: the lowest step
+  CHECK_EQ(lsfPrevBrightness(0, 5), 0);                // off stays off
+  CHECK_EQ(lsfPrevBrightness(130, 5), 128);            // 51 %: the step below it is 50 %
+  // walking down from 100 % reaches the floor in 19 presses and every value is a step lower than the last
+  unsigned b = 255; int n = 0;
+  while (lsfPrevBrightness(uint8_t(b), 5) < b) { b = lsfPrevBrightness(uint8_t(b), 5); n++; }
+  CHECK_EQ(n, 19);
+  CHECK_EQ(b, 13);
+  // up then down returns to the same level for every 5 % step
+  for (unsigned pct = 5; pct < 100; pct += 5) {
+    unsigned v = (pct * 255 + 50) / 100;
+    CHECK_EQ(lsfPrevBrightness(lsfNextBrightness(uint8_t(v), 5), 5), v);
+  }
+  const uint8_t steps[] = {1, 5, 10, 50, 0, 200};
+  for (uint8_t st : steps)
+    for (unsigned v = 0; v <= 255; v++) {
+      unsigned r = lsfPrevBrightness(uint8_t(v), st);
+      CHECK((v == 0 && r == 0) || (v > 0 && r >= 1));  // never turns a lit display off
+      CHECK(r <= (v > 0 ? 255u : 0u));
+    }
+}
+
 static void testIdSet() {
   LsfIdSet s;
   CHECK_EQ(s.count(), 0u);
@@ -164,9 +213,10 @@ static void testIdSet() {
 
 int main() {
   testClick(); testDouble(); testTwoSlowClicksAreTwoClicks(); testTripleIsDoublePlusClick();
-  testHoldStepsThenStopsOnRelease(); testShortPressJustUnderHoldIsClick(); testClickThenHoldCancelsTheClick();
+  testHoldStepsThenStopsOnRelease(); testShortPressJustUnderHoldIsClick(); testDoubleClickAndHoldDims();
+  testSingleHoldAfterAnIdleGapStillBrightens(); testDimThenUpDirectionsDoNotLeak();
   testBounceIsIgnored(); testHeldAtBootIsIgnoredUntilReleased(); testClockWrap(); testSlowPolling();
-  testBrightnessSteps(); testIdSet();
+  testBrightnessSteps(); testBrightnessDown(); testIdSet();
   if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
   std::printf("button tests: ok\n");
   return 0;

@@ -89,10 +89,12 @@ For a display with no phone or network in the loop, the usermod can read **one p
 | **click** | next preset (in id order, wrapping; presets that exist only; powers the display on first if it was off) |
 | **double click** | power on / off |
 | **hold** | brightness goes up in 5 % steps (about four a second) while the button is down, wraps from 100 % back to 5 %, and **stops when you let go** |
+| **double click and hold** (press, release, press again and keep holding) | brightness goes **down** in 5 % steps while the button is down, stops at 5 % (it never turns the display off), and stays where it is when you let go |
 
 Set it up in **Settings > Usermods > ls_formula**: put the button's GPIO in *button pin* (`-1`, the default, switches the feature off) and save. No reboot is needed. *button active low* is on for a button that connects the pin to ground (the usual wiring; the internal pull-up is used, so no resistor is needed); turn it off for a button that connects the pin to 3.3 V. *brightness step* is the step size in percent (1 to 50).
 
 - The pin must not be one WLED already uses (a button in *Time & Macros*, an LED data pin, ...). If it is taken, the usermod leaves it alone and `lsf.button.ok` in the state JSON stays `false`.
+- A click that turns into a hold is not a click: pressing and holding right after a click is the dimming hold.
 - A single click is acted on about 0.35 s after the release: that is how the double click is told apart.
 - A button already held when the board starts is ignored until it is released (so holding BOOT during a reset does nothing).
 - The timings are build flags: `LSF_BTN_DEBOUNCE_MS` (30), `LSF_BTN_DOUBLE_MS` (350), `LSF_BTN_HOLD_MS` (500), `LSF_BTN_STEP_MS` (250).
