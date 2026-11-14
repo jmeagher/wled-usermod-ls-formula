@@ -15,12 +15,13 @@ It is for defining effects **as data**. It is not a general scripting language a
 | Path | Role |
 |---|---|
 | `lsf.h`, `lsf.cpp`, `lsf_sintab.inc` | The engine: compiler, verifier, interpreter, speed estimate. **Plain C++11, no WLED/Arduino includes, no heap, no floats.** Compiled on the desktop for tests and into the firmware. |
-| `ls_formula.cpp` | The WLED side: registers effects, receives uploads, persists, renders. Compiled only inside a WLED build (`#ifdef ARDUINO_ARCH_ESP32`). |
+| `lsf_button.h` | One-button control, pure logic: the click / double-click / hold state machine, the brightness steps and the preset id set. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_button.cpp`. |
+| `ls_formula.cpp` | The WLED side: registers effects, receives uploads, persists, renders, and reads the button pin (`pollButton()`, `nextPreset()`, `stepBrightness()`). Compiled only inside a WLED build (`#ifdef ARDUINO_ARCH_ESP32`). |
 | `library.json` | PlatformIO manifest. `libArchive: false` is required by WLED, and `srcFilter` lists exactly the two `.cpp` files so `tools/` and `tests/` (which contain a `main()`) are never linked into firmware. |
 | `tools/lsfx.py` | Upload/validate/activate/pull/clear tool. Standard library only. |
 | `tools/lsf_cli.cpp` | Desktop renderer: compile a `.lsf` and print pixels. |
 | `tools/gen_sintab.py` | Generates `lsf_sintab.inc`. CI fails if the checked-in table differs. |
-| `tests/` | `run.sh` + `test_lsf.cpp` (engine), `test_lsfx.py` (tool against a fake device that uses the real compiler), `test_docs.py` (every `lsf` block in the docs compiles). |
+| `tests/` | `run.sh` + `test_lsf.cpp` (engine) + `test_button.cpp` (button logic), `test_lsfx.py` (tool against a fake device that uses the real compiler), `test_docs.py` (every `lsf` block in the docs compiles). |
 | `examples/` | Complete formulas with a README. All are compiled by the engine tests. |
 | `scripts/dev-setup.sh` | Fetches the pinned WLED into `.wled/` and wires this tree in. |
 | `platformio_override.sample.ini` | Build environments and tuning flags. |
@@ -197,7 +198,7 @@ To test on a device, `tools/lsfx.py HOST info` first (it fails clearly if the us
 
 ## 6. Changing the engine
 
-- Keep `lsf.*` free of WLED/Arduino headers, heap allocation and floating point. Anything that touches WLED belongs in `ls_formula.cpp`.
+- Keep `lsf.*` and `lsf_button.h` free of WLED/Arduino headers, heap allocation and floating point. Anything that touches WLED belongs in `ls_formula.cpp`.
 - **Adding a function:** add it to the `LsfFn` enum and the `kFn[]` table (name, arity, cost) in `lsf.cpp`, implement it in the `switch` in `lsf_run`, add tests (values, edge cases, arity), document it in `docs/LANGUAGE.md`, and measure its cost on hardware before choosing the weight. Function names become reserved words, so check existing examples do not use the name as a variable.
 - **Changing a limit:** update `lsf.h`, the `static_assert`s if a field width is involved, the docs (`LANGUAGE.md`, `README.md`) and the device `limits` reply. The tests derive their limits from the macros.
 - **Changing the estimate or a cost weight:** re-measure on hardware and update the calibration points in `testEstimate`.

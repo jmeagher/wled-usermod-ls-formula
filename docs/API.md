@@ -47,6 +47,10 @@ The reply contains an `lsf` object:
 
 An upload that fails leaves the previous formula running.
 
+## Button control
+
+The state JSON also reports the one-button control (see the README), under `lsf.button`: `{"pin": 9, "ok": true, "stepPct": 5}`. `pin` is `-1` when the feature is off; `ok` is `true` only when the usermod owns the pin and is reading it. The settings live in `cfg.json` under `um.ls_formula`: `button pin`, `button active low`, `brightness step`.
+
 ## Persistence
 
 An install sets WLED's `configNeedsWrite`, and WLED writes the source into `cfg.json` under `um.ls_formula` shortly afterwards. At boot the usermod recompiles each stored source, so bytecode is never stored: a future change to the language or limits cannot leave stale bytecode on flash. A stored formula that no longer compiles stays visible (with `err`) but inactive.
