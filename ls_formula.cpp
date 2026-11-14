@@ -10,6 +10,7 @@
 
 #include <new>
 #include "lsf.h"
+#include "lsf_button.h"
 
 #ifndef LSF_SLOTS
 #define LSF_SLOTS 4
@@ -176,6 +177,91 @@ class LsFormulaUsermod : public Usermod {
   static const char _name[];
   bool registered = false;
 
+  // --- one-button control (see lsf_button.h). Off unless a pin is configured (Settings > Usermods). -------------
+  int8_t   btnPin = -1;            // GPIO of the button; -1 = feature off
+  bool     btnActiveLow = true;    // pressed pulls the pin to ground (the BOOT button on most ESP32 boards)
+  uint8_t  briStepPct = 5;         // brightness step while held, in percent (1..50)
+  int8_t   btnOwned = -1;          // the pin this usermod has actually claimed from the PinManager
+  LsfButton btn;
+  LsfIdSet presets;                // ids of the presets that exist, rebuilt when presets.json changes
+  unsigned long presetsStamp = 0;  // presetsModifiedTime the list was built for
+  bool     presetsValid = false;
+
+  void releaseButton() {
+    if (btnOwned >= 0) PinManager::deallocatePin(btnOwned, PinOwner::UM_Unspecified);
+    btnOwned = -1;
+    btn.reset();
+  }
+
+  void initButton() {
+    releaseButton();
+    if (btnPin < 0) return;
+    if (!PinManager::allocatePin(btnPin, false, PinOwner::UM_Unspecified)) {
+      DEBUG_PRINTF_P(PSTR("[lsf] button pin %d is not available (used by something else or not a valid input)\n"), btnPin);
+      return;
+    }
+    btnOwned = btnPin;
+    pinMode(btnPin, btnActiveLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+  }
+
+  // The preset ids come from one pass over presets.json that keeps only each preset's "n" key. Checking the ids one
+  // by one would open the file up to 250 times.
+  void loadPresetList() {
+    if (presetsValid && presetsStamp == presetsModifiedTime) return;
+    if (!requestJSONBufferLock(JSON_LOCK_PRESET_NAME)) return;   // busy: keep the old list, try again on the next press
+    StaticJsonDocument<64> filter;
+    filter["*"]["n"] = true;
+    presets.clear();
+    if (readObjectFromFile(getPresetsFileName(), nullptr, pDoc, &filter)) {
+      for (JsonPair kv : pDoc->as<JsonObject>()) {
+        const int id = atoi(kv.key().c_str());
+        if (id >= 1 && id <= LsfIdSet::kMax && !kv.value()["n"].isNull()) presets.add(id);
+      }
+    }
+    releaseJSONBufferLock();
+    presetsStamp = presetsModifiedTime;
+    presetsValid = true;
+  }
+
+  void nextPreset() {
+    loadPresetList();
+    const unsigned id = presets.next(currentPreset);
+    if (id == 0) return;                                   // no presets saved yet
+    if (bri == 0) toggleOnOff();                           // a click on a dark display should show something
+    applyPreset(id, CALL_MODE_BUTTON_PRESET);
+  }
+
+  void stepBrightness(bool up, uint32_t now) {
+    if (up) {
+      if (bri == 0) {
+        toggleOnOff();                                     // power on, then start from the lowest step
+        bri = lsfNextBrightness(0, briStepPct);
+      } else {
+        bri = lsfNextBrightness(bri, briStepPct);
+      }
+    } else {
+      if (bri == 0) return;                                // nothing to dim; dimming never turns the display off
+      const uint8_t v = lsfPrevBrightness(bri, briStepPct);
+      if (v == bri) return;                                // already at the lowest level
+      bri = v;
+    }
+    stateUpdated(CALL_MODE_BUTTON);
+    if (lsfAtBrightnessEnd(bri)) btn.delayNextStep(now, LSF_BTN_END_HOLD_MS);   // dwell on the brightest / dimmest level
+  }
+
+  void pollButton() {
+    if (btnOwned < 0) return;
+    const bool pressed = (digitalRead(btnOwned) == LOW) == btnActiveLow;
+    const uint32_t now = millis();
+    switch (btn.poll(pressed, now)) {
+      case LSFB_CLICK:     nextPreset(); break;
+      case LSFB_DOUBLE:    toggleOnOff(); stateUpdated(CALL_MODE_BUTTON); break;
+      case LSFB_HOLD_UP:   stepBrightness(true, now); break;
+      case LSFB_HOLD_DOWN: stepBrightness(false, now); break;
+      default: break;
+    }
+  }
+
   // Compile `src` and, unless `dry`, install it in slot `idx`. Returns true on success. Always fills g_last.
   bool install(uint8_t idx, const char* name, const char* src, bool dry) {
     g_last.slot = idx; g_last.dry = dry; g_last.ok = false;
@@ -246,9 +332,10 @@ class LsFormulaUsermod : public Usermod {
     g_slots[3].fxId = strip.addEffect(255, &mode_lsf<3>, g_slots[3].meta);
 #endif
     registered = true;
+    initButton();
   }
 
-  void loop() override {}
+  void loop() override { pollButton(); }
 
   // Upload API. POST /json/state with:
   //   {"lsf":{"slot":0,"src":"hsv(x+t/8,255,255)","name":"My Wave"}}   install
@@ -310,6 +397,8 @@ class LsFormulaUsermod : public Usermod {
     JsonObject lim = o.createNestedObject(F("limits"));
     lim[F("src")] = LSF_MAX_SRC; lim[F("instrs")] = LSF_MAX_INSNS; lim[F("locals")] = LSF_MAX_LOCALS; lim[F("slots")] = LSF_SLOTS;
     lim[F("budgetUs")] = LSF_BUDGET_US; lim[F("pixels")] = strip.getLengthTotal();
+    JsonObject bt = o.createNestedObject(F("button"));
+    bt[F("pin")] = btnPin; bt[F("ok")] = btnOwned >= 0; bt[F("stepPct")] = briStepPct;
   }
 
   void addToConfig(JsonObject& root) override {
@@ -321,6 +410,10 @@ class LsFormulaUsermod : public Usermod {
       e[F("name")] = g_slots[k].name;
       e[F("src")] = g_slots[k].src;
     }
+    // Button control: pin -1 switches it off. Changing the pin or the polarity takes effect on save (no reboot).
+    top[F("button pin")] = btnPin;
+    top[F("button active low")] = btnActiveLow;
+    top[F("brightness step")] = briStepPct;
   }
 
   bool readFromConfig(JsonObject& root) override {
@@ -342,7 +435,20 @@ class LsFormulaUsermod : public Usermod {
         g_slots[k].srcLen = (uint16_t)strlen(g_slots[k].src);
       }
     }
-    return true;
+
+    // Button settings. A config saved before this feature existed lacks the keys: `complete` is then false, so WLED
+    // writes the defaults back and the settings page shows them.
+    bool complete = true;
+    int pin = -1;
+    complete &= getJsonValue(top[F("button pin")], pin, -1);
+    complete &= getJsonValue(top[F("button active low")], btnActiveLow, true);
+    int step = 5;
+    complete &= getJsonValue(top[F("brightness step")], step, 5);
+    briStepPct = (uint8_t)constrain(step, 1, 50);
+    const int8_t newPin = (pin >= 0 && pin < 255) ? (int8_t)pin : -1;
+    btnPin = newPin;
+    if (registered) initButton();   // saved from the settings page while running: apply pin and polarity now
+    return complete;
   }
 
   uint16_t getId() override { return USERMOD_ID_UNSPECIFIED; }
