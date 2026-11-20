@@ -149,17 +149,29 @@ Adding a chip type or another board is a one-line change to the `LED_TYPES` or `
 
 **`bar`**: a 32×8 WS2812 panel on GPIO 18 plus a 50-LED strip on GPIO 19. Its panel starts at the bottom-right (checked with the corner test above):
 
+The Bar needs the **`lsf_esp32c6_4MB_longtext`** firmware environment: WLED limits a segment name to 64 characters, the Scrolling Text effect shows the segment name, and the Happy Hour message is 84 characters. That environment raises the limit to 96 (`-D WLED_MAX_SEGNAME_LEN=96`). WLED's web UI still limits a name field to 64 characters, so change these texts through `apply.sh` (or the JSON API), not by retyping the name in the UI.
+
 ```sh
-board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
+ENV_NAME=lsf_esp32c6_4MB_longtext board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
     --strip pin=18,matrix=32x8,bottom=yes,right=yes --strip pin=19,len=50
-board_setup/devices/bar/apply.sh                            # then the preset below (defaults to wled-bar.local)
+board_setup/devices/bar/apply.sh                            # then the presets below (defaults to wled-bar.local)
 ```
 
-`apply.sh` saves preset 1, **"Birdie's Bar"**, as the boot preset. It has three segments and does not store the brightness, so the slider stays manual:
+`apply.sh` saves three presets. None of them stores the brightness, so the slider stays manual:
+
+| Preset | |
+|---|---|
+| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends |
+| 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials." |
+| 3 **"Happy Hour"** | a playlist: runs preset 2 for **4 hours** (`HAPPY_HOUR_SECONDS`, default 14400), then switches to preset 1 |
+
+Start Happy Hour by choosing preset 3 in WLED (or `curl -X POST http://wled-bar.local/json/state -H 'Content-Type: application/json' -d '{"ps":3}'`). If the board loses power during Happy Hour it starts in preset 1 again, and the 4 hours are not resumed. The playlist's timer does not advance while the display is switched off.
+
+Each display preset has three segments:
 
 | Segment | What it shows |
 |---|---|
-| 0, **"Birdie's Bar!"**, the 32×8 panel | Scrolling Text in light blue. The text is the segment's name, so rename the segment to change it |
+| 0, the 32×8 panel (named after its text: "Birdie's Bar") | Scrolling Text in light blue. The text is the segment's name |
 | 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once |
 | 2, the strand on GPIO 19 | built-in *Colortwinkles* with the palette "Colors Only" (yellow, white, pink): many more sparkles than the panel |
 
