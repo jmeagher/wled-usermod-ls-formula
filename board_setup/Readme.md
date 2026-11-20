@@ -162,18 +162,20 @@ board_setup/devices/bar/apply.sh                            # then the presets b
 | Preset | |
 |---|---|
 | 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends |
-| 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials." |
+| 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials.", and **red and green added to the sparkles** on both the panel and the strand |
 | 3 **"Happy Hour"** | a playlist: runs preset 2 for **4 hours** (`HAPPY_HOUR_SECONDS`, default 14400), then switches to preset 1 |
 
 Start Happy Hour by choosing preset 3 in WLED (or `curl -X POST http://wled-bar.local/json/state -H 'Content-Type: application/json' -d '{"ps":3}'`). If the board loses power during Happy Hour it starts in preset 1 again, and the 4 hours are not resumed. The playlist's timer does not advance while the display is switched off.
+
+All the text scrolls at twice the original speed (Scrolling Text speed 214 for the main text and 235 for the long message: one column every 83 ms and 66 ms).
 
 Each display preset has three segments:
 
 | Segment | What it shows |
 |---|---|
 | 0, the 32×8 panel (named after its text: "Birdie's Bar") | Scrolling Text in light blue. The text is the segment's name |
-| 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once |
-| 2, the strand on GPIO 19 | built-in *Colortwinkles* with the palette "Colors Only" (yellow, white, pink): many more sparkles than the panel |
+| 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once. In Happy Hour, custom slider 1 is 255, which adds red and green |
+| 2, the strand on GPIO 19 | built-in *Colortwinkles*: many more sparkles than the panel. Normally the palette "Colors Only" (yellow, white, pink). In Happy Hour it uses the custom palette [`happy_hour_palette.json`](devices/bar/happy_hour_palette.json) (yellow, white, pink, red, green), uploaded by `apply.sh` as `/palette0.json` (palette id 200), and spawns sparkles more often |
 
 After a reboot the brightness is the board's default (128) until you move the slider.
 
