@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]   # other branches are covered by their pull request; "**" here ran everything twice
   pull_request:
   schedule:
     - cron: '0 4 * * *'   # nightly: catches WLED API changes on main
@@ -11,12 +11,17 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash   # explicit bash runs with -eo pipefail, so a failing command at the front of a pipe fails the step
+
 jobs:
   host:
     name: Engine tests (desktop)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { persist-credentials: false }
       - name: Sine table is in sync with its generator
         run: python3 tools/gen_sintab.py | diff - lsf_sintab.inc
@@ -28,6 +33,7 @@ jobs:
   firmware:
     name: Build ${{ matrix.env }} against WLED ${{ matrix.label }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -36,25 +42,26 @@ jobs:
           # The WLED commit this usermod is tested against.
           - { env: esp32dev,        label: pinned, ref: fffa05a765d41d7126b66ab5a3d1ce1f41e7d11e, experimental: false }
           - { env: esp32c6dev_8MB,  label: pinned, ref: fffa05a765d41d7126b66ab5a3d1ce1f41e7d11e, experimental: false }
-          # WLED main as of today: an early warning, allowed to fail.
+          # WLED main as of today: an early warning, allowed to fail. Deliberately NOT pinned: the point is to see
+          # upstream changes the night they land (the pinned entries above are the ones that must pass).
           - { env: esp32dev,        label: main,   ref: main, experimental: true }
           - { env: esp32c6dev_8MB,  label: main,   ref: main, experimental: true }
     steps:
       - name: Checkout usermod
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { path: wled-usermod-ls-formula, persist-credentials: false }
       - name: Checkout WLED
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: { repository: wled/WLED, ref: "${{ matrix.ref }}", path: WLED, persist-credentials: false }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 20 }
       - name: Cache PlatformIO packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.platformio
           key: pio-${{ matrix.env }}-${{ hashFiles('WLED/platformio.ini') }}
           restore-keys: pio-${{ matrix.env }}-
-      - run: pip install platformio
+      - run: pip install platformio==6.2.0   # pinned: a new PlatformIO release must not break the build unannounced
       - name: Build the web UI (generates headers the firmware includes)
         working-directory: WLED
         run: npm ci && npm run build
