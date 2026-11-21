@@ -324,7 +324,7 @@ static void testEstimate() {
   CHECK(lsf_estimate_us(q, 0xFFFFFFFFu) == 0xFFFFFFFFu);
   CHECK(lsf_max_pixels(q, 0xFFFFFFFFu) > 0);
   CHECK(lsf_max_pixels(q, 0) == 0);
-  // The calibration points measured on the ESP32-C6 (50 LEDs, worst frame in us) stay within 0.9x..1.5x.
+  // The calibration points measured on the ESP32-C6 (50 LEDs, worst frame in us) stay within 1.0x..1.5x.
   struct { const char* file; unsigned measuredUs; } cal[] = {
     {"rainbow_wave", 461}, {"plasma", 674}, {"comet_trail", 668}, {"twinkle", 737}, {"ripple2d", 731}, {"fire", 1774}, {"falling_leaves", 2524}, {"bench_heavy_noise", 5913}};
   for (unsigned k = 0; k < sizeof(cal) / sizeof(cal[0]); k++) {
@@ -335,8 +335,9 @@ static void testEstimate() {
     LsfProgram e;
     if (!lsf_compile(buf, n, &e, nullptr)) { g_fail++; continue; }
     double ratio = (double)lsf_estimate_us(e, 50) / cal[k].measuredUs;
-    if (ratio < 0.9 || ratio > 1.5) printf("calibration drift for %s: ratio %.2f\n", cal[k].file, ratio);
-    CHECK(ratio >= 0.9 && ratio <= 1.5);
+    // Never below the measurement: an under-estimate is what lets a formula past admission control and stall WiFi.
+    if (ratio < 1.0 || ratio > 1.5) printf("calibration drift for %s: ratio %.2f\n", cal[k].file, ratio);
+    CHECK(ratio >= 1.0 && ratio <= 1.5);
   }
 }
 
@@ -405,6 +406,20 @@ static void testUnverifiedRun() {
   CHECK(true);
 }
 
+static void testCallWeights() {
+  // Every call costs at least 2 (the call itself costs about one simple operator), on top of its arguments.
+  LsfProgram p;
+  for (int f = 0; f < FN__COUNT; f++) {
+    static const char* names[] = {"sin", "tri", "noise", "hash", "scale", "min", "max", "abs", "clamp", "mix", "sel", "hsv",
+                                  "rgb", "pal", "red", "green", "blue", "dim", "blend", "prev", "prev2"};
+    std::string src = std::string(names[f]) + "(";
+    for (int a = 0; a < lsf_fn_arity((uint8_t)f); a++) src += a ? ",x" : "x";
+    src += ")";
+    CHECK(compile(src.c_str(), &p));
+    CHECK(p.cost >= (unsigned)lsf_fn_arity((uint8_t)f) + 2);
+  }
+}
+
 static void testExamplesCompile() {
   // The shipped examples must all be valid.
   static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise"};
@@ -423,7 +438,7 @@ static void testExamplesCompile() {
 int main() {
   testArithmetic(); testMultiline(); testBuiltins(); testNoise(); testInputsAndLocals(); testRejects();
   testLimits(); testVerifier(); testFuzz(); testCallbacks(); testCost(); testEstimate(); testExamplesCompile();
-  testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun();
+  testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun(); testCallWeights();
   printf("%d checks, %d failures\n", g_run, g_fail);
   return g_fail ? 1 : 0;
 }

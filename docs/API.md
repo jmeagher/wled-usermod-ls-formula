@@ -71,13 +71,15 @@ A new program is swapped in with the strip suspended (`strip.suspend()` then `wa
 
 ## Speed budget (admission control)
 
-What decides whether a strip keeps up is **cost x pixels**. The compiler gives each program a `cost`, a weighted per-pixel operation count (simple operators 1, `hsv` 8, `noise` 8, `blend` 10, ...). The estimate is
+What decides whether a strip keeps up is **cost x pixels**. The compiler gives each program a `cost`, a weighted per-pixel operation count (simple operators 1, every function call at least 2, `prev` 5, `pal` 6, `hsv` 8, `noise` 8, `blend` 10, ...). The estimate is
 
 ```text
 estimated frame time (us) = pixels x (0.3 x cost + 1)
 ```
 
-calibrated on an ESP32-C6 at 160 MHz against eight formulas: the estimate came out 0.99x to 1.35x the measured worst frame, and `tests/test_lsf.cpp` fails if it drifts outside 0.9x..1.5x.
+calibrated on an ESP32-C6 at 160 MHz against eight formulas: the estimate comes out 1.09x to 1.38x the measured worst frame, and `tests/test_lsf.cpp` fails if it drifts outside 1.0x..1.5x (an estimate below the measurement is what would let a too-slow formula in).
+
+The weights were calibrated against whole formulas, not one function at a time, and they lean high: a call costs at least 2 because the call itself costs about as much as a simple operator, and `prev`/`prev2`, which read the host's frame buffer, carry a margin (at their earlier weights `fire.lsf` was estimated at 0.99x of its measured time). A formula built from nothing but the one function that is cheapest relative to its weight can still run somewhat slower than estimated. That is what the run-time guards below are for.
 
 - **At upload.** A formula whose estimate for the strip's total LED count exceeds `LSF_BUDGET_US` (default **15000**) is rejected with `over budget: ~22 ms for 50 LEDs, this formula fits 35 LEDs`, and the old formula keeps running.
 - **Every frame.** The check repeats for the segment actually being drawn. If you later add LEDs or widen a segment, the slot turns black with an `over budget` message rather than stalling WiFi, and resumes by itself when it fits again. This is also why the upload check is skipped at boot: the strip is not set up yet.

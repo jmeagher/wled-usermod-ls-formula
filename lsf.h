@@ -113,8 +113,8 @@ uint32_t lsf_run(const LsfProgram& p, const LsfCtx& ctx);
 // Admission control. A formula's run time is cost x pixels, and that, not the
 // instruction count, is what decides whether a strip can keep up. The estimate
 // is per-pixel microseconds = cost * 0.3 + 1, calibrated on an ESP32-C6 at
-// 160 MHz against eight real formulas (it came out 0.99x to 1.35x the measured
-// worst frame; tests/test_lsf.cpp keeps it honest). Override LSF_US_PER_COST_X10 for a faster or slower chip.
+// 160 MHz against eight real formulas (it comes out 1.09x to 1.38x the measured
+// worst frame; tests/test_lsf.cpp fails outside 1.0x..1.5x). Override LSF_US_PER_COST_X10 for a faster or slower chip.
 #ifndef LSF_US_PER_COST_X10
 #define LSF_US_PER_COST_X10 3
 #endif

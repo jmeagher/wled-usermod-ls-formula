@@ -69,14 +69,24 @@ static uint32_t blendColor(uint32_t a, uint32_t b, int32_t f) {
 
 // ------------------------------------------------------------ tables ------
 
+// Cost weights, in units of one simple operator (see lsf_estimate_us). They lean high on purpose:
+//  - every call costs at least 2: the call itself (the dispatch on the function id and the argument handling) costs
+//    about as much as a simple operator before the function does any work, so a formula made of nothing but the
+//    cheapest functions (red(), sel(), abs() ...) would otherwise be under-estimated;
+//  - prev() and prev2() call back into the host's frame buffer. At their old weights (3 and 4) fire.lsf was the one
+//    calibration formula whose estimate fell below the measured frame time (0.99x), so they carry a margin now.
+// The weights were calibrated against whole formulas on the device, not per function (tests/test_lsf.cpp keeps every
+// calibration point at 1.0x..1.5x of the measured worst frame). A formula made of one function whose weight is
+// low relative to its real cost can still run somewhat slower than estimated; the per-segment slow-frame guard and
+// the per-frame time budget in ls_formula.cpp are the backstop for that.
 struct FnInfo { const char* name; uint8_t arity; uint8_t cost; };
 static const FnInfo kFn[FN__COUNT] = {
   {"sin", 1, 2},  {"tri", 1, 2},   {"noise", 2, 8}, {"hash", 1, 4},
-  {"scale", 3, 3}, {"min", 2, 1},  {"max", 2, 1},    {"abs", 1, 1},
-  {"clamp", 3, 2}, {"mix", 3, 3},  {"sel", 3, 1},    {"hsv", 3, 8},
-  {"rgb", 3, 3},   {"pal", 1, 6},  {"red", 1, 1},    {"green", 1, 1},
-  {"blue", 1, 1},   {"dim", 2, 6},  {"blend", 3, 10}, {"prev", 1, 3},
-  {"prev2", 2, 4},
+  {"scale", 3, 3}, {"min", 2, 2},  {"max", 2, 2},    {"abs", 1, 2},
+  {"clamp", 3, 2}, {"mix", 3, 3},  {"sel", 3, 2},    {"hsv", 3, 8},
+  {"rgb", 3, 3},   {"pal", 1, 6},  {"red", 1, 2},    {"green", 1, 2},
+  {"blue", 1, 2},   {"dim", 2, 6},  {"blend", 3, 10}, {"prev", 1, 5},
+  {"prev2", 2, 6},
 };
 
 int lsf_fn_arity(uint8_t fn) { return fn < FN__COUNT ? kFn[fn].arity : -1; }
