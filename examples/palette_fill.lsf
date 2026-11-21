@@ -1,9 +1,8 @@
-# Fill and drain: red rises from both ends to the middle (the top of a door frame), holds, drains back,
-# then green does the same. 10 s per colour. Works on any strip: the "top" is the middle.
+# Fill and drain: the palette's first colour rises from both ends to the middle (the top of a door frame),
+# holds, drains back, then the last colour does the same. 10 s per colour. The "top" is the middle on any strip.
 let e = min(i, n - 1 - i)                           # distance from the nearest end
 let u = t % 10000                                   # time within this colour
 let lv = sel(u < 4000, u * 255 / 4000, sel(u < 5000, 255, max(0, (9000 - u) * 255 / 4000)))   # level 0..255
 let b = clamp(lv * ((n + 1) / 2) * 256 / 255 - e * 256, 0, 255)   # 1 px soft edge on the front
 let v = b * scale(sin(e * 30 - t / 8), 150, 255) / 255            # a gentle shimmer inside
-let g = t / 10000 & 1                               # 0 red, 1 green
-hsv(g * 85, 255, v * sel(g, 7, 10) / 10)
+dim(pal(t / 10000 % 2 * 255), v)

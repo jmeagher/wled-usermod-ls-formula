@@ -1,0 +1,6 @@
+# Palette garland: slow waves of the palette's first and last colour roll along the strip, like a swag of lights.
+# The colour changes only where the wave crosses zero, so it passes through dark and the colours never mix.
+let a = i * 11 + t / 12 + sin(i * 5 + t / 30) / 3   # a wave with a little wobble, drifting along
+let s = sin(a)
+let v = scale(abs(s - 128) * 2, 25, 255)            # dark at the crossings, full at the crests
+dim(pal(sel(s > 127, 0, 255)), v)

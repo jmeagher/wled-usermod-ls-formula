@@ -181,15 +181,30 @@ After a reboot the brightness is the board's default (128) until you move the sl
 
 ## Per-device effects
 
-A device can carry its own LS Formula effects and start in them. These live in `board_setup/devices/<name>/`: the `.lsf` formulas plus an `apply.sh` that uploads them, saves each as a preset and sets the boot preset.
+A device can carry its own LS Formula effects and start in them. These live in `board_setup/devices/<name>/`: an `apply.sh` that uploads the formulas, saves presets and playlists, and sets the boot preset where the device has one.
 
-**`mbr-door`: "Fall patterns".** The boot preset (2) is a playlist that steps through three patterns, **2 minutes each**. Each pattern is also its own preset. The formulas are the autumn set in [`examples/`](../examples/README.md#the-autumn-set).
+**Fall and Christmas are both installed on the mantle and on the MBR door, at the same time.** The usermod has only 4 formula slots, so a season does not get slots of its own. Instead the formulas take their colours from the segment's palette (`pal()`), and a preset picks the palette:
 
-| Preset | Pattern | Formula |
+| Palette | Colours | Used by |
 |---|---|---|
-| 3 | **Falling Leaves**: about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves (deep orange through amber, about one in five brown) spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | `examples/falling_leaves_autumn.lsf` |
-| 4 | **Autumn Twinkle**: every LED swells and fades on its own 6-12 s cycle and picks a new fall colour (red, orange, amber, gold, some brown) each time | `examples/autumn_twinkle.lsf` |
-| 5 | **End Flames**: a crackling fire. The main fire starts at both ends and slowly drifts toward the centre (about 3 px/s); thin wisps peel off it and drift all the way to the centre (the top), fading as they go; a few small bright pops near the ends | `examples/end_flames.lsf` |
+| `christmas` (palette id 200) | red and green, alternating over the 16 palette slots | the Christmas presets |
+| `fall` (palette id 199) | rust, orange, amber, gold and brown | the Fall presets |
+
+`apply.sh` uploads both ([`devices/palettes/`](devices/palettes/)) as `/palette0.json` and `/palette1.json`, and refuses to replace a different palette that is already there. The shared logic (uploads, saving presets, playlists, waiting until WLED has really written them) is in [`devices/lib.sh`](devices/lib.sh). The formulas are in [`examples/`](../examples/README.md#the-palette-set-fall-and-christmas).
+
+**`mbr-door`** (`board_setup/devices/mbr-door/apply.sh`, defaults to `mbr-door.local`). The boot preset (2) is the **Fall** playlist; the Christmas playlist (8) is started by choosing it in WLED. Slots: 0 `palette_drops.lsf`, 1 `palette_twinkle.lsf`, 2 `end_flames.lsf`, 3 `palette_fill.lsf`.
+
+| Preset | Look | Formula, palette, P1 |
+|---|---|---|
+| 3 **Falling Leaves** | about 10% of the LEDs are green dots that slowly wander a few pixels; 2-3 pixel autumn leaves spawn at the middle about once a second and fall to either end in about 4 s, passing behind the green dots | drops, fall, 128 |
+| 4 **Autumn Twinkle** | every LED swells and fades on its own 6-12 s cycle in a fall colour | twinkle, fall, 255 |
+| 5 **End Flames** | a crackling fire. The main fire starts at both ends and drifts toward the centre (about 3 px/s); thin wisps peel off it and drift all the way to the centre (the top); a few small bright pops near the ends | `end_flames.lsf` (no palette) |
+| 9 **Autumn Fill** | rust rises from both ends to the middle, drains, then amber does the same | fill, fall |
+| 2 **"Fall patterns"** | playlist of 3, 4, 5 and 9, 2 minutes each. The boot preset | |
+| 6 **Christmas Fall** | red and green drops fall from the middle to both ends over a faint red/green glow | drops, christmas, 0 |
+| 7 **Christmas Twinkle** | every LED swells and fades on its own 4-9 s cycle in red or green | twinkle, christmas, 0 |
+| 10 **Christmas Fill** | red rises from both ends to the middle, drains, then green does the same | fill, christmas |
+| 8 **"Christmas"** | playlist of 6, 7 and 10, 2 minutes each | |
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local
@@ -199,33 +214,21 @@ SECONDS_PER_PATTERN=5 board_setup/devices/mbr-door/apply.sh    # a fast rotation
 
 To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
 
-### Christmas (reds and greens)
+**`mantle`** (`board_setup/devices/mantle/apply.sh`, defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset it does not own (the ids below, with another name). The boot preset is **not** changed. Slots: 0 `palette_twinkle.lsf`, 1 `palette_chase.lsf`, 2 `palette_garland.lsf`, 3 `palette_fill.lsf`.
 
-Both boards also carry Christmas presets. They are added next to what is already there and **do not change the boot preset**; start them by choosing the playlist in WLED.
+| Christmas | Fall | Look |
+|---|---|---|
+| 20 Christmas Twinkle | 30 Autumn Twinkle | every LED swells and fades, in red or green / a fall colour |
+| 21 Christmas Chase | 31 Autumn Chase | 6 px bands of two colours marching along the strand |
+| 23 Garland Sway | 33 Autumn Garland | slow waves of two colours, like a swag of lights |
+| 24 Christmas Fill | 34 Autumn Fill | the first colour rises from both ends to the middle, drains, then the second colour |
+| 22 **"Christmas"** | 32 **"Fall"** | a playlist of the four, 2 minutes each (`SECONDS_PER_PATTERN`) |
 
-**`mbr-door`** (`apply.sh` above). The usermod has 4 formula slots and the fall set uses 3, so Christmas is one formula, [`christmas_door.lsf`](../examples/christmas_door.lsf) in slot 3, in two looks that differ only in custom slider 1:
+The script leaves the Fall playlist running. Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (22 Christmas, 32 Fall on the mantle; 8 Christmas on the door).
 
-| Preset | |
-|---|---|
-| 6 "Christmas Fall" | slider 0: red and green drops fall from the middle (the top) to both ends, over a faint red/green glow |
-| 7 "Christmas Twinkle" | slider 255: every LED slowly swells and fades in red or green |
-| 8 **"Christmas"** | a playlist of 6 and 7, 2 minutes each (`SECONDS_PER_PATTERN`) |
+**Why not WLED's built-in effects?** Some of these could be built-ins with a palette (Twinklefox for the twinkle, *Palette* or *Colorwaves* for the garland, *Fire 2012* with Mirror for the flames), and that would free slots. They were left as formulas: the formulas keep the exact look the boards already had, and the slot budget is no longer a limit because the seasons share slots. A built-in can be added as one more preset with no change to the scripts.
 
-**`mantle`**: `board_setup/devices/mantle/apply.sh` (defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset 20-24 that has another name.
-
-| Preset | |
-|---|---|
-| 20 "Christmas Twinkle" | [`christmas_twinkle.lsf`](../examples/christmas_twinkle.lsf): every LED swells and fades in red or green |
-| 21 "Christmas Chase" | [`christmas_chase.lsf`](../examples/christmas_chase.lsf): 6 px red and green bands marching along the strand |
-| 23 "Garland Sway" | [`christmas_garland.lsf`](../examples/christmas_garland.lsf): slow red and green waves, like a swag of lights |
-| 24 "Christmas Fill" | [`christmas_fill.lsf`](../examples/christmas_fill.lsf): red rises from both ends to the middle, drains, then green does the same |
-| 22 **"Christmas"** | a playlist of 20, 21, 23 and 24, 2 minutes each |
-
-`christmas_fill.lsf` is written for a door frame (the middle is the top) and suits the mantle too. The door has no free slot for it: to use it there, replace one of the fall formulas or fold it into `christmas_door.lsf`.
-
-Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (8 on the door).
-
-**Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The leaves (984 bytes) and flames (1009 bytes) formulas are close to the 1024-byte source limit, and comments count.
+**Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The drops (989 bytes) and flames (1009 bytes) formulas are close to the 1024-byte source limit, and comments count.
 
 **Saving a playlist through the API.** WLED only writes a playlist to `presets.json` when the request is shaped exactly like the one its own web UI sends: `{"playlist":{...,"r":false,...},"on":true,"o":true,"psave":N,"n":"name"}`. Leaving out `on` and `r` made WLED start the playlist but never save it, with no error.
 

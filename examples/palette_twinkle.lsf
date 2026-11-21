@@ -1,0 +1,8 @@
+# Palette twinkle: every pixel slowly swells and fades on its own cycle and picks a new colour
+# from the segment's palette each time. P1 sets the pace: 0 = 4-9 s cycles, 255 = 6-12 s.
+let pr = 4000 + c1 * 8 + hash(i) % (5000 + c1 * 4)   # this pixel cycle length, ms
+let tt = t + hash(i + 999) % 12000      # its own phase
+let ph = tt % pr * 256 / pr             # 0..255 through the cycle
+let c = hash(i * 131 + tt / pr)         # colour choice, fixed within a cycle
+let v = scale(sin(ph - 64), 15, 255)    # dimmest at the cycle start/end
+dim(pal((c >> 8) % 16 * 17), v)         # one of the palette's 16 exact slots
