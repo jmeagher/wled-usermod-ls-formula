@@ -199,6 +199,28 @@ SECONDS_PER_PATTERN=5 board_setup/devices/mbr-door/apply.sh    # a fast rotation
 
 To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
 
+### Christmas (reds and greens)
+
+Both boards also carry Christmas presets. They are added next to what is already there and **do not change the boot preset**; start them by choosing the playlist in WLED.
+
+**`mbr-door`** (`apply.sh` above). The usermod has 4 formula slots and the fall set uses 3, so Christmas is one formula, [`christmas_door.lsf`](../examples/christmas_door.lsf) in slot 3, in two looks that differ only in custom slider 1:
+
+| Preset | |
+|---|---|
+| 6 "Christmas Fall" | slider 0: red and green drops fall from the middle (the top) to both ends, over a faint red/green glow |
+| 7 "Christmas Twinkle" | slider 255: every LED slowly swells and fades in red or green |
+| 8 **"Christmas"** | a playlist of 6 and 7, 2 minutes each (`SECONDS_PER_PATTERN`) |
+
+**`mantle`**: `board_setup/devices/mantle/apply.sh` (defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset 20-22 that has another name.
+
+| Preset | |
+|---|---|
+| 20 "Christmas Twinkle" | [`christmas_twinkle.lsf`](../examples/christmas_twinkle.lsf): every LED swells and fades in red or green |
+| 21 "Christmas Chase" | [`christmas_chase.lsf`](../examples/christmas_chase.lsf): 6 px red and green bands marching along the strand |
+| 22 **"Christmas"** | a playlist of 20 and 21, 2 minutes each |
+
+Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (8 on the door).
+
 **Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The leaves (984 bytes) and flames (1009 bytes) formulas are close to the 1024-byte source limit, and comments count.
 
 **Saving a playlist through the API.** WLED only writes a playlist to `presets.json` when the request is shaped exactly like the one its own web UI sends: `{"playlist":{...,"r":false,...},"on":true,"o":true,"psave":N,"n":"name"}`. Leaving out `on` and `r` made WLED start the playlist but never save it, with no error.

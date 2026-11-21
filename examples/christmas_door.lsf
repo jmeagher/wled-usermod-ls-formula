@@ -1,0 +1,14 @@
+# Door frame (middle = top). P1 above 200: slow red/green twinkle. Else: red and green drops fall from the middle.
+let ct = 2 * i - (n - 1)
+let lw = t / 82 - abs(ct)               # drop coordinate: moves out from the middle
+let a = hash((lw >> 3) * 2 + (ct > 0))  # one random slot per 8 half px, per side
+let lp = lw & 7
+let ln = 4 + (a >> 12 & 1) * 2          # 2 or 3 px
+let bg = hsv(sel(hash(i / 4) & 1, 85, 0), 255, 8 + noise(i * 200, t / 30) / 14)
+let drop = sel(a >> 9 & 1, hsv(0, 255, 255), hsv(85, 255, 170))
+let fall = sel((a & 255) < 90 && lp < ln, drop, bg)
+let pr = 4000 + hash(i) % 5000
+let tt = t + hash(i + 999) % 9000
+let c = hash(i * 131 + tt / pr)
+let v = scale(sin(tt % pr * 256 / pr - 64), 15, 255)
+sel(c1 > 200, sel(c & 1, hsv(82 + (c >> 4) % 10, 255, v * 7 / 10), hsv((c >> 4) % 6, 255, v)), fall)
