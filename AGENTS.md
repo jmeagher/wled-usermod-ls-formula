@@ -15,6 +15,7 @@ It is for defining effects **as data**. It is not a general scripting language a
 | Path | Role |
 |---|---|
 | `lsf.h`, `lsf.cpp`, `lsf_sintab.inc` | The engine: compiler, verifier, interpreter, speed estimate. **Plain C++11, no WLED/Arduino includes, no heap, no floats.** Compiled on the desktop for tests and into the firmware. |
+| `lsf_runtime.h` | Run-time support for the WLED side, pure logic: the program store (double buffering between the web task and the render task), the per-frame time budget and status and the per-segment slow-frame counter. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_lsf.cpp`. |
 | `lsf_button.h` | One-button control, pure logic: the click / double-click / hold state machine, the brightness steps and the preset id set. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_button.cpp`. |
 | `ls_formula.cpp` | The WLED side: registers effects, receives uploads, persists, renders, and reads the button pin (`pollButton()`, `nextPreset()`, `stepBrightness()`). Compiled only inside a WLED build (`#ifdef ARDUINO_ARCH_ESP32`). |
 | `library.json` | PlatformIO manifest. `libArchive: false` is required by WLED, and `srcFilter` lists exactly the two `.cpp` files so `tools/` and `tests/` (which contain a `main()`) are never linked into firmware. |
@@ -32,34 +33,36 @@ It is for defining effects **as data**. It is not a general scripting language a
 ### Lifecycle
 
 1. **Boot.** WLED loads `cfg.json`, then calls `readFromConfig()` (before `setup()`): each stored source is recompiled into its slot. Bytecode is never stored. If the usermod's section is missing it returns `false` so WLED writes defaults.
-2. **`setup()`.** `strip.addEffect(255, &mode_lsf<S>, g_slots[S].meta)` registers each slot, and the returned id is kept as `fxId`. `registered` becomes true; from then on, changes happen with the strip suspended.
-3. **Upload.** `POST /json/state` with `{"lsf":{...}}` reaches `readFromJsonState()`: `compile -> verify -> budget check -> swap -> configNeedsWrite = true`. The result is stored in `g_last` and returned by `addToJsonState()`.
+2. **`setup()`.** `strip.addEffect(255, &mode_lsf<S>, g_slots[S].meta)` registers each slot, and the returned id is kept as `fxId`. `registered` becomes true.
+3. **Upload.** `POST /json/state` with `{"lsf":{...}}` reaches `readFromJsonState()`: `acquire a spare buffer -> compile into it -> verify -> budget check -> publish -> configNeedsWrite = true`. The result is stored in `g_last` and returned by `addToJsonState()`.
 4. **Every frame.** WLED calls `mode_lsf<S>()` -> `renderSlot(S)` for each segment running the effect.
 
 ### One frame: `renderSlot`
 
-- Empty, disabled or over-budget slot: fill black and return.
+- A `LsfProgramStore::Reader` brackets the whole function; the slot's program (`LsfRun`) is loaded once from it.
+- Empty slot or disabled program: fill black and return.
 - 2D only when `strip.isMatrix && SEGMENT.is2D()`; otherwise 1D, including a strip trailing a matrix.
-- Admission control: `lsf_estimate_us(prog, pixels) > LSF_BUDGET_US` marks the slot over budget and fills black.
+- Admission control (`g_frame.admit()`, `LsfFrameGuard`): `lsf_estimate_us(prog, pixels) > LSF_BUDGET_US` for this segment, or the frame's summed estimate past `LSF_FRAME_BUDGET_US`, or the frame's real formula time past `LSF_SLOW_FRAME_US`: fill black. The verdicts are collected per slot and published when the next frame starts (`strip.now` changes), which is what the state JSON reports.
 - If `prog.usesPrev`, `SEGENV.allocateData(pixels * 6)` gives two RGB frames (previous, next) in the segment's effect data; on failure show the first colour.
 - Per pixel: fill the `LsfCtx.in[]` inputs, call `lsf_run`, write the colour with `setPixelColor` (1D) or `setPixelColorXY` (2D), and copy it to the `next` buffer. After the loop, `next` is copied over `prev`.
-- Time the loop with `micros()`; update `avgUs` and `worstUs`; three frames over 60 ms disable the slot.
+- Time the loop with `micros()`; charge it to the frame; update the program's `avgUs` and `worstUs`; three consecutive frames over 60 ms **on the same segment** (`lsfSlowFrame()` on `SEGENV.aux0`, with the install generation in `aux1`) disable the program.
 
 ### Invariants (do not break these)
 
 - `lsf_run` assumes a program that passed `lsf_verify`. `lsf_compile` always verifies; the verifier is independent of the code generator on purpose, so a compiler bug cannot become a memory-safety bug.
-- Install is **all or nothing**: compile into a heap temporary (`new (std::nothrow) LsfProgram`, because the async_tcp task stack is small), check everything, then `strip.suspend(); strip.waitForIt();` copy in; `strip.resume()`. A failed upload leaves the old program running.
+- Install is **all or nothing**, and the renderer never sees a program being written: `g_store.acquire()` returns a buffer that no slot owns and no frame can still be reading (it waits up to `LSF_SWAP_WAIT_MS` if needed); compile into it, check everything, then `g_store.publish()` swaps the slot's pointer atomically. A failed upload leaves the old program running. Do not write a program that `installed()` returns, and do not keep an `LsfRun*` from a `Reader` beyond the `Reader`'s scope.
+- Everything except the program pointer and the `LsfRun` status atomics is touched only from functions WLED calls with its JSON buffer lock held (`readFromJsonState`, `addToJsonState`, `readFromConfig`, `addToConfig`); that lock is what serializes the store's writer side.
 - The engine core never allocates, uses no floating point and has no undefined behaviour on any input: wrapping unsigned arithmetic, defined division by zero, shift counts masked. The tests run under ASan and UBSan and fuzz this.
 - The metadata string for a slot is a RAM buffer (`meta`) that WLED keeps a pointer to. Never move or free it.
 - `LsfProgram::n` is 16 bits; `static_assert`s in `lsf.cpp` guard the limits against their field widths.
 
 ### Memory
 
-About 3.2 KB per slot is static: a 256-instruction program is 2 KB (8 bytes per instruction), plus 1 KB of source and small fields. Four slots are about 13 KB. A formula that calls `prev`/`prev2` also uses 6 bytes per pixel of heap while running.
+Static: `LSF_SLOTS + 1` program buffers of about 2.1 KB (a 256-instruction program is 2 KB, 8 bytes per instruction, plus status), and per slot about 1.2 KB of source, name and metadata. Four slots are about 15.5 KB (about 2.5 KB more than before the spare buffer; an install no longer needs a 2 KB heap temporary). A formula that calls `prev`/`prev2` also uses 6 bytes per pixel of heap while running.
 
 ### The speed budget
 
-`cost` is a weighted per-pixel operation count computed at compile time (`kFn[]` costs in `lsf.cpp`; simple operators 1, `mul/div/mod` 2). Estimated frame time = `pixels * (0.3 * cost + 1)` microseconds, calibrated on an ESP32-C6 (160 MHz) against eight real formulas, and `tests/test_lsf.cpp::testEstimate` fails if any of them leaves 0.9x..1.5x of its measured worst frame. If you change a function's cost, measure it on hardware first. See [docs/API.md](docs/API.md#speed-budget-admission-control).
+`cost` is a weighted per-pixel operation count computed at compile time (`kFn[]` costs in `lsf.cpp`; simple operators 1, `mul/div/mod` 2, every call at least 2). Estimated frame time = `pixels * (0.3 * cost + 1)` microseconds, calibrated on an ESP32-C6 (160 MHz) against eight real formulas, and `tests/test_lsf.cpp::testEstimate` fails if any of them leaves 1.0x..1.5x of its measured worst frame. If you change a function's cost, measure it on hardware first. See [docs/API.md](docs/API.md#speed-budget-admission-control).
 
 ## 4. Writing effects
 
@@ -198,7 +201,7 @@ To test on a device, `tools/lsfx.py HOST info` first (it fails clearly if the us
 
 ## 6. Changing the engine
 
-- Keep `lsf.*` and `lsf_button.h` free of WLED/Arduino headers, heap allocation and floating point. Anything that touches WLED belongs in `ls_formula.cpp`.
+- Keep `lsf.*`, `lsf_runtime.h` and `lsf_button.h` free of WLED/Arduino headers, heap allocation and floating point. Anything that touches WLED belongs in `ls_formula.cpp`.
 - **Adding a function:** add it to the `LsfFn` enum and the `kFn[]` table (name, arity, cost) in `lsf.cpp`, implement it in the `switch` in `lsf_run`, add tests (values, edge cases, arity), document it in `docs/LANGUAGE.md`, and measure its cost on hardware before choosing the weight. Function names become reserved words, so check existing examples do not use the name as a variable.
 - **Changing a limit:** update `lsf.h`, the `static_assert`s if a field width is involved, the docs (`LANGUAGE.md`, `README.md`) and the device `limits` reply. The tests derive their limits from the macros.
 - **Changing the estimate or a cost weight:** re-measure on hardware and update the calibration points in `testEstimate`.

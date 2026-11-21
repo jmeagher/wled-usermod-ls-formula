@@ -11,46 +11,56 @@
 #include <new>
 #include "lsf.h"
 #include "lsf_button.h"
+#include "lsf_runtime.h"
 
 #ifndef LSF_SLOTS
 #define LSF_SLOTS 4
 #endif
 #ifndef LSF_SLOW_FRAME_US
-#define LSF_SLOW_FRAME_US 60000   // a frame this slow, three times in a row, disables the slot
+#define LSF_SLOW_FRAME_US 60000   // a segment frame this slow, three times in a row, disables the formula; also the
+                                  // real time after which no more formula segments are drawn in the same strip frame
 #endif
 #ifndef LSF_BUDGET_US
 #define LSF_BUDGET_US 15000       // largest estimated render time per frame for one formula (see lsf_estimate_us)
 #endif
+#ifndef LSF_FRAME_BUDGET_US
+#define LSF_FRAME_BUDGET_US (2 * LSF_BUDGET_US)   // largest estimated time for all formula segments of one strip frame
+#endif
+#ifndef LSF_SWAP_WAIT_MS
+#define LSF_SWAP_WAIT_MS 500      // how long an install waits for the frame being drawn to release a program buffer
+#endif
+#define LSF_STATUS_STALE_MS 2000  // per-frame status older than this is not reported (the effect is not running)
 #define LSF_NAME_MAX 20
 
+// Concurrency. WLED draws every segment from one task (strip.service() in loop()); uploads, settings and the state
+// JSON run in the web server's task. The program a frame is drawing with is never written: an install compiles into
+// a spare buffer and publishes it atomically (LsfProgramStore, lsf_runtime.h), so the strip is not suspended.
+// Everything else here (source, name, g_last, the store's writer side) is only touched with WLED's JSON buffer lock
+// held: readFromJsonState, addToJsonState, readFromConfig and addToConfig are all called under it.
 struct LsfSlot {
-  LsfProgram prog;
-  bool       ok = false;         // a valid program is installed
-  bool       disabled = false;   // switched off by the slow-frame guard
-  bool       overBudget = false; // estimated frame time exceeds LSF_BUDGET_US for the current segment size
-  uint32_t   estUs = 0;          // estimate for the segment last rendered
   uint8_t    fxId = 255;         // WLED effect id once registered
-  uint8_t    slowFrames = 0;
-  uint32_t   worstUs = 0;
-  uint32_t   avgUs = 0;          // exponential moving average of the real frame time (worstUs includes preemption by WiFi/HTTP)
   uint16_t   srcLen = 0;
   char       name[LSF_NAME_MAX + 1];
   char       src[LSF_MAX_SRC + 1];
   char       meta[96];           // WLED effect metadata string, rebuilt when the name changes
-  char       runtimeErr[40];
+  char       cfgErr[48];         // a stored formula that did not compile at boot (the slot is then empty)
 };
 
 static LsfSlot g_slots[LSF_SLOTS];
+static LsfProgramStore<LSF_SLOTS> g_store;
+static LsfFrameGuard<LSF_SLOTS> g_frame(LSF_BUDGET_US, LSF_FRAME_BUDGET_US, LSF_SLOW_FRAME_US);
+static uint16_t g_installGen = 0;
 
 // Result of the most recent upload or dry run, reported in the state JSON.
-static struct {
+struct LsfLast {
   int      slot = -1;
   bool     ok = false;
   bool     dry = false;
   char     msg[72] = "";
   uint16_t line = 0, pos = 0, instrs = 0, cost = 0;
   uint32_t estUs = 0, maxPixels = 0;
-} g_last;
+};
+static LsfLast g_last;
 
 static void buildMeta(LsfSlot& s) {
   // Format: Name@slider labels;colour labels;palette;dimension flags;defaults
@@ -59,15 +69,18 @@ static void buildMeta(LsfSlot& s) {
 }
 
 static void setName(LsfSlot& s, uint8_t idx, const char* wanted) {
+  char nm[LSF_NAME_MAX + 1];
   size_t o = 0;
   if (wanted) {
     for (; *wanted && o < LSF_NAME_MAX; wanted++) {   // the metadata format reserves '@' ';' ','
       char c = *wanted;
-      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_') s.name[o++] = c;
+      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_') nm[o++] = c;
     }
   }
-  s.name[o] = 0;
-  if (o == 0) snprintf(s.name, sizeof(s.name), "LS Formula %u", (unsigned)idx + 1);
+  nm[o] = 0;
+  if (o == 0) snprintf(nm, sizeof(nm), "LS Formula %u", (unsigned)idx + 1);
+  if (strcmp(nm, s.name) == 0 && s.meta[0]) return;   // unchanged: do not rewrite the metadata WLED may be reading
+  memcpy(s.name, nm, sizeof(nm));
   buildMeta(s);
 }
 
@@ -91,8 +104,10 @@ static uint32_t cbPrev2(void* u, int32_t x, int32_t y) {
 }
 
 static void renderSlot(uint8_t s) {
-  LsfSlot& sl = g_slots[s];
-  if (!sl.ok || sl.disabled) { SEGMENT.fill(BLACK); return; }
+  LsfProgramStore<LSF_SLOTS>::Reader reader(g_store);   // the program stays valid until this returns
+  LsfRun* run = reader.get(s);
+  if (!run || run->disabled.load()) { SEGMENT.fill(BLACK); return; }
+  const LsfProgram& prog = run->prog;
 
   const bool two = strip.isMatrix && SEGMENT.is2D();
   const int w = two ? (int)SEG_W : (int)SEGLEN;
@@ -100,14 +115,17 @@ static void renderSlot(uint8_t s) {
   const unsigned total = (unsigned)w * (unsigned)h;
   if (total == 0) return;
 
-  // Admission control, every frame: an LED-count or segment change can make an accepted formula too slow.
-  sl.estUs = lsf_estimate_us(sl.prog, total);
-  sl.overBudget = sl.estUs > LSF_BUDGET_US;
-  if (sl.overBudget) { SEGMENT.fill(BLACK); return; }
+  // Admission control, every frame: an LED-count or segment change can make an accepted formula too slow for this
+  // segment, and all formula segments of one frame share LSF_FRAME_BUDGET_US.
+  const uint32_t estUs = lsf_estimate_us(prog, total);
+  if (g_frame.admit(s, (uint32_t)strip.now, millis(), estUs, total) != LsfFrameGuard<LSF_SLOTS>::DRAW) {
+    SEGMENT.fill(BLACK);
+    return;
+  }
 
   RenderState rs = { nullptr, w, h, total };
   uint8_t* next = nullptr;
-  if (sl.prog.usesPrev) {
+  if (prog.usesPrev) {
     // Two RGB frames live in the segment's effect data: previous, then the one being built.
     if (!SEGENV.allocateData((size_t)total * 6)) {   // heap pressure: show the first colour instead of crashing
       SEGMENT.fill(SEGCOLOR(0));
@@ -144,7 +162,7 @@ static void renderSlot(uint8_t s) {
       c.in[LSF_IN_I] = i;
       c.in[LSF_IN_CX] = x;
       c.in[LSF_IN_X] = w > 1 ? (x * 255) / (w - 1) : 0;
-      const uint32_t col = lsf_run(sl.prog, c);
+      const uint32_t col = lsf_run(prog, c);
       if (next) {
         uint8_t* q = next + (size_t)i * 3;
         q[0] = col >> 16; q[1] = col >> 8; q[2] = col;
@@ -155,16 +173,16 @@ static void renderSlot(uint8_t s) {
   if (next) memcpy(rs.prev, next, (size_t)total * 3);
 
   // Slow-frame guard: a formula that cannot keep up must not stall the strip service loop (and WiFi with it).
+  // Counted per segment (aux0, with the install generation in aux1): a fast small segment must not reset the count
+  // of a slow big one running the same formula.
   const uint32_t us = micros() - t0;
-  if (us > sl.worstUs) sl.worstUs = us;
-  sl.avgUs = sl.avgUs ? (sl.avgUs * 15 + us) / 16 : us;
-  if (us > LSF_SLOW_FRAME_US) {
-    if (++sl.slowFrames >= 3) {
-      sl.disabled = true;
-      snprintf(sl.runtimeErr, sizeof(sl.runtimeErr), "disabled: frame took %lu ms", (unsigned long)(us / 1000));
-    }
-  } else {
-    sl.slowFrames = 0;
+  g_frame.charge(us);
+  if (us > run->worstUs.load(std::memory_order_relaxed)) run->worstUs.store(us, std::memory_order_relaxed);
+  const uint32_t avg = run->avgUs.load(std::memory_order_relaxed);
+  run->avgUs.store(avg ? (avg * 15 + us) / 16 : us, std::memory_order_relaxed);
+  if (lsfSlowFrame(SEGENV.aux0, SEGENV.aux1, run->gen, us, LSF_SLOW_FRAME_US) && !run->disabled.load()) {
+    snprintf(run->err, sizeof(run->err), "disabled: frame took %lu ms", (unsigned long)(us / 1000));
+    run->disabled.store(true);   // after err: a reader that sees `disabled` sees the message
   }
 }
 
@@ -262,61 +280,64 @@ class LsFormulaUsermod : public Usermod {
     }
   }
 
-  // Compile `src` and, unless `dry`, install it in slot `idx`. Returns true on success. Always fills g_last.
-  bool install(uint8_t idx, const char* name, const char* src, bool dry) {
-    g_last.slot = idx; g_last.dry = dry; g_last.ok = false;
-    g_last.line = g_last.pos = g_last.instrs = g_last.cost = 0;
-    g_last.estUs = g_last.maxPixels = 0;
-    snprintf(g_last.msg, sizeof(g_last.msg), "%s", "");
-    if (idx >= LSF_SLOTS) { snprintf(g_last.msg, sizeof(g_last.msg), "slot out of range"); return false; }
+  // A program buffer that the frame being drawn cannot be reading. Normally immediate; it waits only when an install
+  // follows the previous one while a frame still uses the program that install replaced.
+  LsfRun* acquireBuffer() {
+    LsfRun* b = g_store.acquire();
+    if (b || !registered) return b;   // before setup() nothing is drawing
+    const uint32_t start = millis();
+    while (!(b = g_store.acquire()) && millis() - start < LSF_SWAP_WAIT_MS) delay(1);
+    return b;
+  }
+
+  // Compile `src` and, unless `dry`, install it in slot `idx`. Returns true on success and fills `out`. On failure
+  // nothing about the slot changes: the previous formula keeps running.
+  bool install(uint8_t idx, const char* name, const char* src, bool dry, LsfLast& out) {
+    out = LsfLast();
+    out.slot = idx; out.dry = dry;
+    if (idx >= LSF_SLOTS) { snprintf(out.msg, sizeof(out.msg), "slot out of range"); return false; }
     const size_t len = strlen(src);
-    LsfProgram* tmp = new (std::nothrow) LsfProgram;   // off the (small) async_tcp stack
-    if (!tmp) { snprintf(g_last.msg, sizeof(g_last.msg), "out of memory"); return false; }
+    LsfRun* b = acquireBuffer();
+    if (!b) { snprintf(out.msg, sizeof(out.msg), "busy: a frame is still being drawn, try again"); return false; }
+    // `b` belongs to no slot and no frame is reading it, so it can be compiled into directly (it is 2 KB: too big
+    // for the web server's stack). A failed or dry compile just leaves it spare.
     LsfError err;
-    const bool ok = lsf_compile(src, len, tmp, &err);
-    if (!ok) {
-      snprintf(g_last.msg, sizeof(g_last.msg), "%s", err.msg);
-      g_last.line = err.line; g_last.pos = err.pos;
-      delete tmp;
+    if (!lsf_compile(src, len, &b->prog, &err)) {
+      snprintf(out.msg, sizeof(out.msg), "%s", err.msg);
+      out.line = err.line; out.pos = err.pos;
       return false;
     }
-    g_last.instrs = tmp->n; g_last.cost = tmp->cost;
-    g_last.maxPixels = lsf_max_pixels(*tmp, LSF_BUDGET_US);
+    out.instrs = b->prog.n; out.cost = b->prog.cost;
+    out.maxPixels = lsf_max_pixels(b->prog, LSF_BUDGET_US);
     const uint32_t pixels = strip.getLengthTotal();
-    g_last.estUs = lsf_estimate_us(*tmp, pixels);
-    if (registered && pixels > 0 && g_last.estUs > LSF_BUDGET_US) {   // at boot the strip is not set up yet: the per-frame check covers it
-      snprintf(g_last.msg, sizeof(g_last.msg), "over budget: ~%lu ms for %lu LEDs, this formula fits %lu LEDs",
-               (unsigned long)((g_last.estUs + 999) / 1000), (unsigned long)pixels, (unsigned long)g_last.maxPixels);
-      delete tmp;
+    out.estUs = lsf_estimate_us(b->prog, pixels);
+    if (registered && pixels > 0 && out.estUs > LSF_BUDGET_US) {   // at boot the strip is not set up yet: the per-frame check covers it
+      snprintf(out.msg, sizeof(out.msg), "over budget: ~%lu ms for %lu LEDs, this formula fits %lu LEDs",
+               (unsigned long)((out.estUs + 999) / 1000), (unsigned long)pixels, (unsigned long)out.maxPixels);
       return false;
     }
-    g_last.ok = true;
-    if (!dry) {
-      LsfSlot& s = g_slots[idx];
-      const bool live = registered;
-      if (live) { strip.suspend(); strip.waitForIt(); }   // no frame may be mid-render while the program is swapped
-      memcpy(&s.prog, tmp, sizeof(LsfProgram));
-      memcpy(s.src, src, len); s.src[len] = 0; s.srcLen = (uint16_t)len;
-      s.ok = true; s.disabled = false; s.overBudget = false; s.slowFrames = 0; s.worstUs = 0; s.avgUs = 0; s.runtimeErr[0] = 0;
-      if (name) setName(s, idx, name);
-      if (live) strip.resume();
-    }
-    delete tmp;
+    out.ok = true;
+    if (dry) return true;
+    LsfSlot& s = g_slots[idx];
+    if (++g_installGen == 0) g_installGen = 1;
+    b->resetStatus(g_installGen);
+    memcpy(s.src, src, len); s.src[len] = 0; s.srcLen = (uint16_t)len;
+    s.cfgErr[0] = 0;
+    if (name) setName(s, idx, name);
+    g_store.publish(idx, b);   // from the next segment frame on, the renderer draws with the new program
     return true;
   }
 
   void clearSlot(uint8_t idx) {
     LsfSlot& s = g_slots[idx];
-    const bool live = registered;
-    if (live) { strip.suspend(); strip.waitForIt(); }
-    s.ok = false; s.disabled = false; s.srcLen = 0; s.src[0] = 0; s.runtimeErr[0] = 0;
+    g_store.publish(idx, nullptr);
+    s.srcLen = 0; s.src[0] = 0; s.cfgErr[0] = 0;
     setName(s, idx, nullptr);
-    if (live) strip.resume();
   }
 
  public:
   LsFormulaUsermod() {
-    for (uint8_t k = 0; k < LSF_SLOTS; k++) { g_slots[k].src[0] = 0; g_slots[k].runtimeErr[0] = 0; setName(g_slots[k], k, nullptr); }
+    for (uint8_t k = 0; k < LSF_SLOTS; k++) { g_slots[k].src[0] = 0; g_slots[k].cfgErr[0] = 0; g_slots[k].name[0] = 0; g_slots[k].meta[0] = 0; setName(g_slots[k], k, nullptr); }
   }
 
   void setup() override {
@@ -347,56 +368,77 @@ class LsFormulaUsermod : public Usermod {
     if (o.isNull()) return;
     const int idx = o[F("slot")] | -1;
     if (idx < 0 || idx >= LSF_SLOTS) {
-      g_last.slot = idx; g_last.ok = false; g_last.dry = false;
+      g_last = LsfLast();
+      g_last.slot = idx;
       snprintf(g_last.msg, sizeof(g_last.msg), "slot must be 0..%d", LSF_SLOTS - 1);
       return;
     }
     if (o[F("clear")] | false) {
       clearSlot((uint8_t)idx);
-      g_last.slot = idx; g_last.ok = true; g_last.dry = false; g_last.msg[0] = 0;
-      g_last.line = g_last.pos = g_last.instrs = g_last.cost = 0;
+      g_last = LsfLast();
+      g_last.slot = idx; g_last.ok = true;
       configNeedsWrite = true;
       return;
     }
     const char* src = o[F("src")];
     if (!src) {
-      g_last.slot = idx; g_last.ok = false; g_last.dry = false;
+      g_last = LsfLast();
+      g_last.slot = idx;
       snprintf(g_last.msg, sizeof(g_last.msg), "src required");
       return;
     }
     const bool dry = o[F("dry")] | false;
-    if (install((uint8_t)idx, o[F("name")] | (const char*)nullptr, src, dry) && !dry) configNeedsWrite = true;
+    if (install((uint8_t)idx, o[F("name")] | (const char*)nullptr, src, dry, g_last) && !dry) configNeedsWrite = true;
   }
 
   void addToJsonState(JsonObject& root) override {
     JsonObject o = root.createNestedObject(F("lsf"));
+    // Per-slot run-time status comes from the last complete strip frame, so it does not depend on which segment
+    // happened to be drawn last.
+    LsfFrameGuard<LSF_SLOTS>::FrameStatus fr;
+    LsfFrameGuard<LSF_SLOTS>::SlotStatus st[LSF_SLOTS];
+    const bool running = g_frame.report(millis(), LSF_STATUS_STALE_MS, &fr, st);
     JsonArray arr = o.createNestedArray(F("slots"));
     for (uint8_t k = 0; k < LSF_SLOTS; k++) {
       const LsfSlot& s = g_slots[k];
+      const LsfRun* run = g_store.installed(k);
+      const bool disabled = run && run->disabled.load();
       JsonObject e = arr.createNestedObject();
       e[F("slot")] = k;
       e[F("fx")] = s.fxId;
       e[F("name")] = s.name;
-      e[F("ok")] = s.ok && !s.disabled && !s.overBudget;
-      if (s.ok) {
-        e[F("instrs")] = s.prog.n; e[F("cost")] = s.prog.cost; e[F("prev")] = s.prog.usesPrev; e[F("worstUs")] = s.worstUs; e[F("avgUs")] = s.avgUs;
-        e[F("estUs")] = lsf_estimate_us(s.prog, strip.getLengthTotal());   // for the whole strip
-        e[F("maxPx")] = lsf_max_pixels(s.prog, LSF_BUDGET_US);
+      e[F("ok")] = run && !disabled && st[k].over == 0 && st[k].skipped == 0;
+      if (run) {
+        const LsfProgram& p = run->prog;
+        e[F("instrs")] = p.n; e[F("cost")] = p.cost; e[F("prev")] = p.usesPrev;
+        e[F("worstUs")] = run->worstUs.load(std::memory_order_relaxed); e[F("avgUs")] = run->avgUs.load(std::memory_order_relaxed);
+        e[F("estUs")] = lsf_estimate_us(p, strip.getLengthTotal());   // for the whole strip
+        e[F("maxPx")] = lsf_max_pixels(p, LSF_BUDGET_US);
+        if (running) { e[F("segs")] = st[k].segs; e[F("skipped")] = st[k].skipped; e[F("overSegs")] = st[k].over; }
       }
-      if (s.overBudget) {
-        char b[72];
-        snprintf(b, sizeof(b), "over budget: ~%lu ms for this segment, max %lu LEDs", (unsigned long)((s.estUs + 999) / 1000), (unsigned long)lsf_max_pixels(s.prog, LSF_BUDGET_US));
+      char b[80];
+      if (disabled) e[F("err")] = run->err;
+      else if (run && st[k].over) {
+        snprintf(b, sizeof(b), "over budget: ~%lu ms for a segment of %lu LEDs, max %lu LEDs",
+                 (unsigned long)((st[k].overEstUs + 999) / 1000), (unsigned long)st[k].overPixels,
+                 (unsigned long)lsf_max_pixels(run->prog, LSF_BUDGET_US));
         e[F("err")] = b;
-      } else if (s.runtimeErr[0]) e[F("err")] = s.runtimeErr;
+      } else if (run && st[k].skipped) {
+        snprintf(b, sizeof(b), "skipped on %u segment(s): frame budget of %lu ms used up",
+                 (unsigned)st[k].skipped, (unsigned long)(LSF_FRAME_BUDGET_US / 1000));
+        e[F("err")] = b;
+      } else if (s.cfgErr[0]) e[F("err")] = s.cfgErr;
       e[F("src")] = s.src;
     }
     JsonObject l = o.createNestedObject(F("last"));
     l[F("slot")] = g_last.slot; l[F("ok")] = g_last.ok; l[F("dry")] = g_last.dry;
     if (!g_last.ok && g_last.msg[0]) { l[F("err")] = g_last.msg; l[F("line")] = g_last.line; l[F("pos")] = g_last.pos; }
     if (g_last.instrs) { l[F("instrs")] = g_last.instrs; l[F("cost")] = g_last.cost; l[F("estUs")] = g_last.estUs; l[F("maxPx")] = g_last.maxPixels; }
+    JsonObject f = o.createNestedObject(F("frame"));
+    f[F("segs")] = fr.segs; f[F("estUs")] = fr.estUs; f[F("us")] = fr.realUs; f[F("skipped")] = fr.skipped;
     JsonObject lim = o.createNestedObject(F("limits"));
     lim[F("src")] = LSF_MAX_SRC; lim[F("instrs")] = LSF_MAX_INSNS; lim[F("locals")] = LSF_MAX_LOCALS; lim[F("slots")] = LSF_SLOTS;
-    lim[F("budgetUs")] = LSF_BUDGET_US; lim[F("pixels")] = strip.getLengthTotal();
+    lim[F("budgetUs")] = LSF_BUDGET_US; lim[F("frameBudgetUs")] = LSF_FRAME_BUDGET_US; lim[F("pixels")] = strip.getLengthTotal();
     JsonObject bt = o.createNestedObject(F("button"));
     bt[F("pin")] = btnPin; bt[F("ok")] = btnOwned >= 0; bt[F("stepPct")] = briStepPct;
   }
@@ -427,10 +469,10 @@ class LsFormulaUsermod : public Usermod {
       const char* src = e[F("src")] | "";
       const char* name = e[F("name")] | (const char*)nullptr;
       if (src[0] == 0) { setName(g_slots[k], k, name); continue; }
-      if (!install(k, name, src, false)) {
+      if (!install(k, name, src, false, g_last)) {
         // A stored formula that no longer compiles (for example after a limit change) stays visible but inactive.
         setName(g_slots[k], k, name);
-        snprintf(g_slots[k].runtimeErr, sizeof(g_slots[k].runtimeErr), "stored formula: %s", g_last.msg);
+        snprintf(g_slots[k].cfgErr, sizeof(g_slots[k].cfgErr), "stored formula: %s", g_last.msg);
         strlcpy(g_slots[k].src, src, sizeof(g_slots[k].src));
         g_slots[k].srcLen = (uint16_t)strlen(g_slots[k].src);
       }

@@ -1,6 +1,7 @@
 // Host tests for the LS Formula compiler, verifier and interpreter.
 // Build and run: wled/tests/run.sh
 #include "../lsf.h"
+#include "../lsf_runtime.h"
 #include <stdio.h>
 #include <string.h>
 #include <string>
@@ -420,6 +421,136 @@ static void testCallWeights() {
   }
 }
 
+// ------------------------------------------------------------------------------- run-time support -------
+
+static void fillProg(LsfProgram& p, int32_t v) { compile("1", &p); p.code[0].imm = v; }
+
+// Finding: an install used to memcpy over the program the render task might still be running. The store must never
+// hand the writer a buffer that a reader entered before the swap may still hold.
+static void testProgramStore() {
+  LsfProgramStore<2> st;                     // 2 slots + 1 spare
+  LsfRun* a = st.acquire(); CHECK(a != nullptr); fillProg(a->prog, 1); a->resetStatus(1); st.publish(0, a);
+  LsfRun* b = st.acquire(); CHECK(b != nullptr && b != a); fillProg(b->prog, 2); b->resetStatus(2); st.publish(1, b);
+  CHECK(st.installed(0) == a && st.installed(1) == b);
+  {
+    LsfProgramStore<2>::Reader r(st);
+    CHECK((st.seq() & 1u) == 1);
+    const LsfRun* seen = r.get(0);
+    CHECK(seen == a);
+    LsfRun* c = st.acquire(); CHECK(c != nullptr && c != a && c != b);   // the spare
+    fillProg(c->prog, 3); c->resetStatus(3);
+    st.publish(0, c);                        // a is retired while the reader may still use it
+    CHECK(st.installed(0) == c);
+    CHECK(st.acquire() == nullptr);          // a is the only free buffer and the reader is still inside
+    CHECK(seen->prog.code[0].imm == 1);      // untouched
+    LsfCtx ctx = baseCtx();
+    CHECK(lsf_run(seen->prog, ctx) == 1);
+  }
+  CHECK((st.seq() & 1u) == 0);
+  LsfRun* d = st.acquire(); CHECK(d == a);  // released once the reader has left
+  {
+    LsfProgramStore<2>::Reader r(st);
+    CHECK(r.get(0) == st.installed(0));      // a reader that starts after a swap sees the new program
+  }
+  // A buffer retired while no reader was inside can be reused at once.
+  fillProg(d->prog, 4); d->resetStatus(4); st.publish(1, d);     // retires b with an even sequence number
+  LsfRun* e = st.acquire(); CHECK(e == b);
+  // Clearing a slot frees its buffer the same way.
+  {
+    LsfProgramStore<2>::Reader r(st);
+    (void)r.get(0);
+    st.publish(0, nullptr);
+    CHECK(st.installed(0) == nullptr);
+    LsfRun* f = st.acquire(); CHECK(f == b);   // b is free; c (just cleared) is still held by the reader
+    st.publish(0, f);
+    CHECK(st.acquire() == nullptr);
+  }
+  CHECK(st.acquire() != nullptr);
+  // Status is per program: a new program starts clean.
+  LsfRun* g = st.acquire();
+  g->disabled.store(true); g->worstUs.store(99); snprintf(g->err, sizeof(g->err), "x");
+  g->resetStatus(7);
+  CHECK(!g->disabled.load() && g->worstUs.load() == 0 && g->err[0] == 0 && g->gen == 7);
+}
+
+// Finding: the slow-frame counter was per slot, so one fast segment between slow ones reset it and the guard never fired.
+static void testSlowFrame() {
+  const uint32_t limit = 60000;
+  uint16_t bigCount = 0, bigGen = 0, smallCount = 0, smallGen = 0;
+  bool off = false;
+  int frames = 0;
+  for (; frames < 10 && !off; frames++) {    // segment order within a frame: big, small
+    off = lsfSlowFrame(bigCount, bigGen, 1, 70000, limit);
+    if (!off) CHECK(!lsfSlowFrame(smallCount, smallGen, 1, 500, limit));
+  }
+  CHECK(off);
+  CHECK(frames == 3);
+  // A fast frame on the same segment resets it.
+  uint16_t c = 0, g = 0;
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(!lsfSlowFrame(c, g, 1, 100, limit));
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(lsfSlowFrame(c, g, 1, 70000, limit));
+  // A newly installed program (another generation) starts from zero on the same segment.
+  c = 0; g = 0;
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(!lsfSlowFrame(c, g, 2, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 2, 70000, limit));
+  CHECK(lsfSlowFrame(c, g, 2, 70000, limit));
+}
+
+// Finding: the budget was per segment only, so many segments just under it added up without limit; and the per-slot
+// status was overwritten by whichever segment was drawn last.
+static void testFrameGuard() {
+  typedef LsfFrameGuard<2> G;
+  G g(15000, 30000, 60000);
+  G::FrameStatus fr; G::SlotStatus ss[2];
+  CHECK(!g.report(0, 2000, &fr, ss));         // nothing drawn yet
+  // 32 segments of 14 ms each in one frame: only two fit the 30 ms frame budget.
+  for (uint32_t frame = 1; frame <= 3; frame++) {
+    int drawn = 0, skipped = 0;
+    for (int k = 0; k < 32; k++) {
+      G::Verdict v = g.admit(0, frame * 25, frame * 25, 14000, 100);
+      if (v == G::DRAW) { drawn++; g.charge(13000); } else if (v == G::SKIP) skipped++;
+    }
+    CHECK(drawn == 2 && skipped == 30);
+  }
+  CHECK(g.report(75, 2000, &fr, ss));         // the last complete frame (frame 2; frame 3 is still open)
+  CHECK(fr.segs == 2 && fr.skipped == 30 && fr.estUs == 28000 && fr.realUs == 26000);
+  CHECK(ss[0].segs == 2 && ss[0].skipped == 30 && ss[0].over == 0);
+  CHECK(ss[1].segs == 0);
+  CHECK(!g.report(75 + 2001 + 25, 2000, &fr, ss));   // stale: the effect is no longer drawn
+  CHECK(fr.segs == 0 && ss[0].segs == 0);
+
+  // The real time spent stops the frame even when the estimates are small (an estimate that is too low).
+  G h(15000, 30000, 60000);
+  CHECK(h.admit(1, 10, 10, 1000, 10) == G::DRAW); h.charge(61000);
+  CHECK(h.admit(1, 10, 10, 1000, 10) == G::SKIP);
+  CHECK(h.admit(0, 10, 10, 1000, 10) == G::SKIP);
+  CHECK(h.admit(1, 11, 11, 1000, 10) == G::DRAW);   // a new frame starts over
+
+  // One slot on a big and a small segment: the status is the same whatever the order, frame after frame.
+  G m(15000, 30000, 60000);
+  for (uint32_t frame = 1; frame <= 6; frame++) {
+    const bool bigFirst = frame & 1;
+    for (int k = 0; k < 2; k++) {
+      const bool big = (k == 0) == bigFirst;
+      G::Verdict v = m.admit(0, frame, frame, big ? 40000 : 100, big ? 3000 : 8);
+      CHECK(v == (big ? G::OVER_BUDGET : G::DRAW));
+    }
+    if (frame >= 2) {
+      CHECK(m.report(frame, 2000, &fr, ss));
+      CHECK(ss[0].segs == 1 && ss[0].over == 1 && ss[0].overEstUs == 40000 && ss[0].overPixels == 3000);
+    }
+  }
+  // Admission order: an over-budget segment uses none of the frame budget.
+  G q(15000, 30000, 60000);
+  CHECK(q.admit(0, 1, 1, 20000, 1) == G::OVER_BUDGET);
+  CHECK(q.admit(0, 1, 1, 15000, 1) == G::DRAW);
+  CHECK(q.admit(0, 1, 1, 15000, 1) == G::DRAW);
+  CHECK(q.admit(0, 1, 1, 1, 1) == G::SKIP);
+  CHECK(q.admit(5, 2, 2, 1, 1) == G::SKIP);   // bad slot id
+}
+
 static void testExamplesCompile() {
   // The shipped examples must all be valid.
   static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise"};
@@ -439,6 +570,7 @@ int main() {
   testArithmetic(); testMultiline(); testBuiltins(); testNoise(); testInputsAndLocals(); testRejects();
   testLimits(); testVerifier(); testFuzz(); testCallbacks(); testCost(); testEstimate(); testExamplesCompile();
   testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun(); testCallWeights();
+  testProgramStore(); testSlowFrame(); testFrameGuard();
   printf("%d checks, %d failures\n", g_run, g_fail);
   return g_fail ? 1 : 0;
 }
