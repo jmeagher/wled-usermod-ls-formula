@@ -149,19 +149,33 @@ Adding a chip type or another board is a one-line change to the `LED_TYPES` or `
 
 **`bar`**: a 32×8 WS2812 panel on GPIO 18 plus a 50-LED strip on GPIO 19. Its panel starts at the bottom-right (checked with the corner test above):
 
+The Bar needs the **`lsf_esp32c6_4MB_longtext`** firmware environment: WLED limits a segment name to 64 characters, the Scrolling Text effect shows the segment name, and the Happy Hour message is 84 characters. That environment raises the limit to 96 (`-D WLED_MAX_SEGNAME_LEN=96`). WLED's web UI still limits a name field to 64 characters, so change these texts through `apply.sh` (or the JSON API), not by retyping the name in the UI.
+
 ```sh
-board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
+ENV_NAME=lsf_esp32c6_4MB_longtext board_setup/c6-install.sh all --name Bar --mdns wled-bar --ap-ssid wled-bar \
     --strip pin=18,matrix=32x8,bottom=yes,right=yes --strip pin=19,len=50
-board_setup/devices/bar/apply.sh                            # then the preset below (defaults to wled-bar.local)
+board_setup/devices/bar/apply.sh                            # then the presets below (defaults to wled-bar.local)
 ```
 
-`apply.sh` saves preset 1, **"Birdie's Bar"**, as the boot preset. It has three segments and does not store the brightness, so the slider stays manual:
+`apply.sh` saves three presets. None of them stores the brightness, so the slider stays manual:
+
+| Preset | |
+|---|---|
+| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends |
+| 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials.", and **red and green added to the sparkles** on both the panel and the strand |
+| 3 **"Happy Hour"** | a playlist: runs preset 2 for **4 hours** (`HAPPY_HOUR_SECONDS`, default 14400), then switches to preset 1 |
+
+Start Happy Hour by choosing preset 3 in WLED (or `curl -X POST http://wled-bar.local/json/state -H 'Content-Type: application/json' -d '{"ps":3}'`). If the board loses power during Happy Hour it starts in preset 1 again, and the 4 hours are not resumed. The playlist's timer does not advance while the display is switched off.
+
+All the text scrolls at twice the original speed (Scrolling Text speed 214 for the main text and 235 for the long message: one column every 83 ms and 66 ms).
+
+Each display preset has three segments:
 
 | Segment | What it shows |
 |---|---|
-| 0, **"Birdie's Bar!"**, the 32×8 panel | Scrolling Text in light blue. The text is the segment's name, so rename the segment to change it |
-| 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once |
-| 2, the strand on GPIO 19 | built-in *Colortwinkles* with the palette "Colors Only" (yellow, white, pink): many more sparkles than the panel |
+| 0, the 32×8 panel (named after its text: "Birdie's Bar") | Scrolling Text in light blue. The text is the segment's name |
+| 1, "Sparkles", the same panel | [`bar_sparkles.lsf`](../examples/bar_sparkles.lsf), blended over the text with mode *Add*: about 8 yellow, white or pink sparkles at once. In Happy Hour, custom slider 1 is 255, which adds red and green |
+| 2, the strand on GPIO 19 | built-in *Colortwinkles*: many more sparkles than the panel. Normally the palette "Colors Only" (yellow, white, pink). In Happy Hour it uses the custom palette [`happy_hour_palette.json`](devices/bar/happy_hour_palette.json) (yellow, white, pink, red, green), uploaded by `apply.sh` as `/palette0.json` (palette id 200), and spawns sparkles more often |
 
 After a reboot the brightness is the board's default (128) until you move the slider.
 
@@ -184,6 +198,32 @@ SECONDS_PER_PATTERN=5 board_setup/devices/mbr-door/apply.sh    # a fast rotation
 ```
 
 To settle on one pattern, make its preset the boot preset (for example 3 for the leaves) in the WLED UI under *Config > LED Preferences > Boot preset*, or with `curl -X POST http://HOST/json/cfg -d '{"def":{"ps":3}}'`.
+
+### Christmas (reds and greens)
+
+Both boards also carry Christmas presets. They are added next to what is already there and **do not change the boot preset**; start them by choosing the playlist in WLED.
+
+**`mbr-door`** (`apply.sh` above). The usermod has 4 formula slots and the fall set uses 3, so Christmas is one formula, [`christmas_door.lsf`](../examples/christmas_door.lsf) in slot 3, in two looks that differ only in custom slider 1:
+
+| Preset | |
+|---|---|
+| 6 "Christmas Fall" | slider 0: red and green drops fall from the middle (the top) to both ends, over a faint red/green glow |
+| 7 "Christmas Twinkle" | slider 255: every LED slowly swells and fades in red or green |
+| 8 **"Christmas"** | a playlist of 6 and 7, 2 minutes each (`SECONDS_PER_PATTERN`) |
+
+**`mantle`**: `board_setup/devices/mantle/apply.sh` (defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset 20-24 that has another name.
+
+| Preset | |
+|---|---|
+| 20 "Christmas Twinkle" | [`christmas_twinkle.lsf`](../examples/christmas_twinkle.lsf): every LED swells and fades in red or green |
+| 21 "Christmas Chase" | [`christmas_chase.lsf`](../examples/christmas_chase.lsf): 6 px red and green bands marching along the strand |
+| 23 "Garland Sway" | [`christmas_garland.lsf`](../examples/christmas_garland.lsf): slow red and green waves, like a swag of lights |
+| 24 "Christmas Fill" | [`christmas_fill.lsf`](../examples/christmas_fill.lsf): red rises from both ends to the middle, drains, then green does the same |
+| 22 **"Christmas"** | a playlist of 20, 21, 23 and 24, 2 minutes each |
+
+`christmas_fill.lsf` is written for a door frame (the middle is the top) and suits the mantle too. The door has no free slot for it: to use it there, replace one of the fall formulas or fold it into `christmas_door.lsf`.
+
+Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (8 on the door).
 
 **Run `apply.sh` after `provision`**: provisioning replaces the whole filesystem, which removes formulas and presets. Preview a formula with no hardware first (`build/lsf_cli FILE -n 50 -t 5000 -f 1`; `-t` is the time in ms). The leaves (984 bytes) and flames (1009 bytes) formulas are close to the 1024-byte source limit, and comments count.
 

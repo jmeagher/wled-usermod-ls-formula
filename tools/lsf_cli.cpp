@@ -14,13 +14,14 @@ static uint32_t prev1Cb(void* u, int32_t i) { Host* H = (Host*)u; return (i < 0 
 static uint32_t prev2Cb(void* u, int32_t x, int32_t y) { Host* H = (Host*)u; return (x < 0 || y < 0 || x >= H->w || y >= H->h) ? 0 : H->prev[y * H->w + x]; }
 
 int main(int argc, char** argv) {
-  if (argc < 2) { fprintf(stderr, "usage: %s FILE.lsf [-n LEDS] [-t MS] [-f FRAMES] [-w W -h H] [-sp N] [-ix N]\n", argv[0]); return 2; }
-  int n = 16, w = 0, h = 0, frames = 1, sp = 128, ix = 128; unsigned t0 = 0;
+  if (argc < 2) { fprintf(stderr, "usage: %s FILE.lsf [-n LEDS] [-t MS] [-f FRAMES] [-w W -h H] [-sp N] [-ix N] [-c1 N] [-c2 N] [-c3 N]\n", argv[0]); return 2; }
+  int n = 16, w = 0, h = 0, frames = 1, sp = 128, ix = 128, c1 = 128, c2 = 128, c3 = 16; unsigned t0 = 0;
   for (int a = 2; a + 1 < argc; a += 2) {
     int v = atoi(argv[a + 1]);
     if (!strcmp(argv[a], "-n")) n = v; else if (!strcmp(argv[a], "-t")) t0 = (unsigned)v;
     else if (!strcmp(argv[a], "-f")) frames = v; else if (!strcmp(argv[a], "-w")) w = v;
     else if (!strcmp(argv[a], "-h")) h = v; else if (!strcmp(argv[a], "-sp")) sp = v; else if (!strcmp(argv[a], "-ix")) ix = v;
+    else if (!strcmp(argv[a], "-c1")) c1 = v; else if (!strcmp(argv[a], "-c2")) c2 = v; else if (!strcmp(argv[a], "-c3")) c3 = v;
   }
   FILE* f = fopen(argv[1], "rb");
   if (!f) { perror(argv[1]); return 2; }
@@ -36,7 +37,7 @@ int main(int argc, char** argv) {
   LsfCtx c; memset(&c, 0, sizeof(c));
   c.user = &H; c.pal = palCb; c.prev1 = prev1Cb; c.prev2 = prev2Cb;
   c.in[LSF_IN_N] = w * h; c.in[LSF_IN_W] = w; c.in[LSF_IN_H] = h; c.in[LSF_IN_SP] = sp; c.in[LSF_IN_IX] = ix;
-  c.in[LSF_IN_C1] = 128; c.in[LSF_IN_C2] = 128; c.in[LSF_IN_C3] = 16;
+  c.in[LSF_IN_C1] = c1; c.in[LSF_IN_C2] = c2; c.in[LSF_IN_C3] = c3;
   c.in[LSF_IN_K0] = 0xFF0000; c.in[LSF_IN_K1] = 0x00FF00; c.in[LSF_IN_K2] = 0x0000FF;
   for (int fr = 0; fr < frames; fr++) {
     c.in[LSF_IN_T] = (int32_t)(t0 + (unsigned)fr * 16u);

@@ -1,0 +1,5 @@
+# Christmas chase: red and green bands, 6 px each, marching along the strip.
+# Each band fades up and down, so the colours never mix into yellow.
+let a = (i * 21 + t / 10) & 255         # 12 px per cycle; first half red, second half green
+let v = scale(sin(a * 2 - 64), 30, 255) # dark at the edges of a band, full in the middle
+sel(a < 128, hsv(0, 255, v), hsv(85, 255, v * 7 / 10))
