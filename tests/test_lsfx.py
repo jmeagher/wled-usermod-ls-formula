@@ -58,10 +58,11 @@ class FakeWled(BaseHTTPRequestHandler):
                 FakeWled.state["slots"][slot].update(ok=False, src="")
                 FakeWled.state["last"] = {"slot": slot, "ok": True, "dry": False}
             else:
-                with tempfile.NamedTemporaryFile("w", suffix=".lsf", delete=False) as f:
-                    f.write(o["src"])
-                r = subprocess.run([CLI, f.name], capture_output=True, text=True)
-                os.unlink(f.name)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = os.path.join(tmp, "slot.lsf")
+                    with open(path, "w") as f:
+                        f.write(o["src"])
+                    r = subprocess.run([CLI, path], capture_output=True, text=True)
                 if r.returncode == 0:
                     m = re.search(r"ok: (\d+) instructions", r.stderr)
                     cost = int(re.search(r"cost (\d+)", r.stderr).group(1))
@@ -105,11 +106,12 @@ class LsfxTest(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def write(self, text):
-        f = tempfile.NamedTemporaryFile("w", suffix=".lsf", delete=False)
-        f.write(text)
-        f.close()
-        self.addCleanup(os.unlink, f.name)
-        return f.name
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = os.path.join(d.name, "formula.lsf")
+        with open(path, "w") as f:
+            f.write(text)
+        return path
 
     def test_push_activate(self):
         path = self.write("hsv(x + t / 8, 255, 255)\n")
@@ -167,6 +169,17 @@ class LsfxTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("slot 0  fx=200", out)
         self.assertIn("limits: 1024 source bytes", out)
+
+    def test_bad_host_is_rejected_before_any_request(self):
+        for host in ("evil/../x", "a b", "h?x=1", "h#frag", "user@host", "", "[::1]", "host:99999999"):
+            with self.subTest(host):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    rc = lsfx.main([host, "info"])
+                self.assertEqual(rc, 2)
+                self.assertIn("invalid host", err.getvalue())
+        for host in ("wled-1234.local", "192.168.1.50", "127.0.0.1:8080", "wled_x"):
+            lsfx.check_host(host)
 
     def test_unreachable(self):
         rc = lsfx.main(["127.0.0.1:1", "info"])
