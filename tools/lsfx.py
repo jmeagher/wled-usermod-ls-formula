@@ -9,7 +9,7 @@ Uses only the standard library and WLED's normal JSON API (POST /json/state).
   lsfx.py HOST pull SLOT [FILE]
   lsfx.py HOST clear SLOT
 
-HOST is an address or mDNS name (for example wled-1234.local or 192.168.1.50).
+HOST is an address or mDNS name (for example wled-1234.local or 192.0.2.50).
 """
 import argparse
 import json

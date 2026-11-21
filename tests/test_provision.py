@@ -325,7 +325,7 @@ class BoardProbe(unittest.TestCase):
         self.assertEqual(P.parse_mac(self.BANNER), "020000000001")
 
     def test_parse_mac_six_byte_chips(self):
-        self.assertEqual(P.parse_mac("Chip is ESP32-D0WD\nMAC: 24:6f:28:aa:bb:cc\nUploading stub"), "246f28aabbcc")
+        self.assertEqual(P.parse_mac("Chip is ESP32-D0WD\nMAC: 02:00:00:aa:bb:cc\nUploading stub"), "020000aabbcc")
 
     def test_parse_mac_absent(self):
         self.assertIsNone(P.parse_mac("A fatal error occurred"))

@@ -221,7 +221,7 @@ A device can carry its own LS Formula effects and start in them. These live in `
 
 ```sh
 board_setup/devices/mbr-door/apply.sh                       # defaults to mbr-door.local
-board_setup/devices/mbr-door/apply.sh 192.168.1.50          # or give an address
+board_setup/devices/mbr-door/apply.sh 192.0.2.50          # or give an address
 SECONDS_PER_PATTERN=5 board_setup/devices/mbr-door/apply.sh    # a fast rotation, to see every pattern
 ```
 

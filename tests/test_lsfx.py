@@ -178,7 +178,7 @@ class LsfxTest(unittest.TestCase):
                     rc = lsfx.main([host, "info"])
                 self.assertEqual(rc, 2)
                 self.assertIn("invalid host", err.getvalue())
-        for host in ("wled-1234.local", "192.168.1.50", "127.0.0.1:8080", "wled_x"):
+        for host in ("wled-1234.local", "192.0.2.50", "127.0.0.1:8080", "wled_x"):
             lsfx.check_host(host)
 
     def test_unreachable(self):
