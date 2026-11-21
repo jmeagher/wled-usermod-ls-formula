@@ -91,7 +91,17 @@ WIFI_PASSWORD=...               # 8-63 characters, or empty for an open network
 AP_PASSWORD=...                 # the board's own access point; 8-63 characters
 ```
 
+Format: one `KEY=VALUE` per line. A `#` at the start of a line, or after whitespace following an unquoted value, begins a comment. Put a value in single or double quotes if it contains ` #` or leading/trailing spaces (`WIFI_PASSWORD="a #b"`); a value that starts with `#` must be quoted. If a password is silently cut at a `#`, that is why.
+
+The file must not be readable by group or others (`chmod 600 .wled.secrets`): `provision` refuses to use it otherwise, unless you pass `--allow-insecure-secrets`.
+
 Without `AP_PASSWORD` the access point keeps WLED's default password (`wled1234`) and you get a warning. Use `--secrets PATH` for another file or `--no-wifi` to skip the home WiFi.
+
+**Security notes.** WLED's JSON API and the scripts here (`apply.sh`, `tools/lsfx.py`) talk plain, unauthenticated HTTP on your LAN: anyone on the network can change the lights or upload formulas. `provision` sets no settings PIN and no OTA lock; if you need them, configure them in WLED's Security settings afterwards. `--out DIR` writes the generated files, passwords included, with mode 0600 (and creates `DIR` with 0700).
+
+### Safety checks before flashing
+
+Before `provision` replaces the filesystem it (1) checks that the application on the board looks like WLED (it searches the app image for WLED's default access-point name and password strings) and refuses otherwise, unless you pass `--force`; and (2) copies the board's current filesystem partition to `~/.cache/wled-ls-formula/backups/littlefs-<MAC>-<timestamp>.bin` (`--backup-dir` changes the directory). The backup is private (0600) because it holds the old WiFi password; to restore it, `esptool.py write_flash <fs offset> <file>`. A failed backup stops the run before anything is written. After flashing, `provision` also checks that the board reports the configured WiFi network. (WLED's API does not report which network it actually joined; answering at `HOST.local` is the evidence that it joined one.)
 
 ### Options
 
@@ -103,6 +113,9 @@ Without `AP_PASSWORD` the access point keeps WLED's default password (`wled1234`
 | `--strip SPEC` | one LED strip; repeat for more strips on the same board |
 | `--dry-run` | validate and print the result (passwords hidden); touch nothing |
 | `--out DIR` | also save the generated files to `DIR` (they contain passwords); implies `--dry-run` |
+| `--force` | flash even if the application on the board is not recognised as WLED |
+| `--backup-dir DIR` | where the old filesystem is saved before it is replaced |
+| `--allow-insecure-secrets` | use a secrets file that other users can read (only warns) |
 | `--no-verify` | do not wait for the board on the network afterwards |
 
 A strip is `pin=N,len=N` plus optional `type=` (default `ws2812`) and `order=` (default `grb`), and `reversed=yes`:
