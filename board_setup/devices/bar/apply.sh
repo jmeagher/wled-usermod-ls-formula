@@ -27,62 +27,57 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/../../.." && pwd)"
-host="${1:-wled-bar.local}"
+# shellcheck source=../lib.sh
+. "$here/../lib.sh"
+dev_init "${1:-wled-bar.local}"
 boot_preset=1
 happy_sign=2
 happy_playlist=3
 HAPPY_HOUR_SECONDS="${HAPPY_HOUR_SECONDS:-14400}"      # 4 hours; 14400 s = 144000 tenths of a second
+need_uint HAPPY_HOUR_SECONDS "$HAPPY_HOUR_SECONDS" || exit 2
+[ "$HAPPY_HOUR_SECONDS" -ge 1 ] || { echo "HAPPY_HOUR_SECONDS must be at least 1" >&2; exit 2; }
 palette_file="$here/happy_hour_palette.json"
 palette_id=200                                          # custom palette /palette0.json is palette id 200
+# The hardware layout `provision` sets up for the Bar (see board_setup/Readme.md): a 32x8 panel at LED 0, then 50 LEDs on GPIO 19.
+panel_w=32; panel_h=8
+strand_start=$((panel_w * panel_h)); strand_len=50; strand_gpio=19
 text_main="Birdie's Bar"
 text_happy="Birdie's Bar, Happy Hour specials available now. Ask your server about our specials."
-# slot | file | preset name | preset id
-patterns=(
-  "0|bar_sparkles.lsf|Birdie's Bar|1"
-)
-post() { curl -fsS -m 10 -X POST "http://$host$1" -H 'Content-Type: application/json' -d "$2" >/dev/null; }
-get()  { curl -fsS -m 10 "http://$host$1"; }
 
-get /json/info >/dev/null || { echo "$host did not answer; is the board on the network?" >&2; exit 1; }
+# Presets 1-3 are ours, but refuse to overwrite one that somebody else made under a different name
+# (a freshly provisioned board's default preset 1 is called "Boot" and is replaced).
+check_presets "$boot_preset=Birdie's Bar|Boot" "$happy_sign=Happy Hour sign" "$happy_playlist=Happy Hour" || exit 1
 
 # The long sign text needs a segment name of at least ${#text_happy} characters. A firmware with WLED's default limit
-# would silently cut it off, so test that by setting the name and reading it back.
+# would silently cut it off, so test that by setting the name and reading it back. The segment's own name is put back
+# straight afterwards, whatever the outcome, so a failed check leaves no 90-character name behind.
 need=${#text_happy}
+orig_name="$(get /json/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["seg"][0].get("n",""))')"
 post /json/state "$(python3 -c 'import json,sys; print(json.dumps({"seg":[{"id":0,"n":sys.argv[1]}]}))' "$text_happy")"
 got="$(get /json/state | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["seg"][0].get("n","")))')"
+post /json/state "$(python3 -c 'import json,sys; print(json.dumps({"seg":[{"id":0,"n":sys.argv[1]}]}))' "$orig_name")"
 [ "$got" -ge "$need" ] || {
   echo "this firmware keeps only $got characters of a segment name, the Happy Hour text needs $need." >&2
   echo "Flash or OTA the lsf_esp32c6_4MB_longtext environment first (see platformio_override.sample.ini)." >&2
   exit 1
 }
 
-python3 "$root/tools/lsfx.py" "$host" push 0 "$root/examples/bar_sparkles.lsf" --name "Bar Sparkles"
-fx="$(get /json/state | python3 -c 'import json,sys; print(json.load(sys.stdin)["lsf"]["slots"][0]["fx"])')"
+push_slot 0 bar_sparkles.lsf "Bar Sparkles"
+fx="$(slot_fx 0)"
 
-# The custom palette for the Happy Hour strand. Refuse to overwrite a different /palette0.json (a palette someone made).
-existing="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "http://$host/palette0.json" || true)"
-if [ "$existing" = "200" ] && ! get /palette0.json | python3 -c '
-import json, sys
-sys.exit(0 if json.load(sys.stdin) == json.load(open(sys.argv[1])) else 1)' "$palette_file"; then
-  echo "/palette0.json on $host is a different palette; not overwriting it (remove it first, or change palette_id)" >&2
-  exit 1
-fi
-curl -fsS -m 20 -F "data=@$palette_file;filename=/palette0.json" "http://$host/upload" >/dev/null
-sleep 2
-get /palette0.json | python3 -c '
-import json, sys
-sys.exit(0 if json.load(sys.stdin) == json.load(open(sys.argv[1])) else 1)' "$palette_file" || { echo "the palette upload did not arrive intact" >&2; exit 1; }
+# The custom palette for the Happy Hour strand. Refuses to overwrite a different /palette0.json (a palette someone made).
+dev_palette_files "$palette_file"
 
 # The live state for one display preset. Effect ids: 122 Scrolling Text, 74 Colortwinkles.
 # Scrolling Text: c2=128 picks the 6x8 font (8 rows tall), ix=128 no vertical offset, c3=16 no rotation, sx = scroll speed.
 # Colortwinkles: sx = fade speed, ix = how often new sparkles start; palette 5 is "Colors Only" (the segment's three
 # colours), so each sparkle is yellow, white or pink.
 state_for() {   # $1 = scrolling text, $2 = scroll speed, $3 = 1 for the colourful (Happy Hour) sparkles
-  python3 - "$1" "$2" "$fx" "$3" "$palette_id" <<'PY'
+  python3 - "$1" "$2" "$fx" "$3" "$palette_id" "$panel_w" "$panel_h" "$strand_start" "$strand_len" "$strand_gpio" <<'PY'
 import json, sys
 text, speed, fx, colourful, pal = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == "1", int(sys.argv[5])
-panel = {"start": 0, "stop": 32, "startY": 0, "stopY": 8, "on": True, "frz": False, "bri": 255}
+w, h, s0, n, gpio = (int(a) for a in sys.argv[6:11])
+panel = {"start": 0, "stop": w, "startY": 0, "stopY": h, "on": True, "frz": False, "bri": 255}
 segs = [
   {**panel, "id": 0, "n": text, "fx": 122, "sx": speed, "ix": 128, "c1": 0, "c2": 128, "c3": 16, "pal": 0, "bm": 0,
    "col": [[135, 206, 250], [0, 0, 0], [0, 0, 0]]},
@@ -90,7 +85,7 @@ segs = [
   {**panel, "id": 1, "n": "Sparkles", "fx": fx, "sx": 128, "ix": 128, "c1": 255 if colourful else 128, "pal": 0, "bm": 2,
    "col": [[255, 255, 255], [0, 0, 0], [0, 0, 0]]},
   # the strand: palette 5 = the three segment colours; Happy Hour uses the 5-colour custom palette and spawns more
-  {"id": 2, "start": 256, "stop": 306, "startY": 0, "stopY": 1, "n": "Strip 2 (GPIO 19)", "on": True, "frz": False,
+  {"id": 2, "start": s0, "stop": s0 + n, "startY": 0, "stopY": 1, "n": "Strip 2 (GPIO %d)" % gpio, "on": True, "frz": False,
    "bri": 255, "fx": 74, "sx": 100, "ix": 200 if colourful else 150, "pal": pal if colourful else 5, "bm": 0,
    "col": [[255, 200, 0], [255, 255, 255], [255, 105, 180]]},
 ]
@@ -103,8 +98,9 @@ PY
 # Optional $6 is a quick-load label ("ql"): it marks the preset as a "scene" for the touch controller's preset picker,
 # which lists scenes first. Playlists count as scenes without it; plain presets need it.
 save_display() {   # $1 id, $2 preset name, $3 text, $4 speed, $5 1 = colourful, $6 quick-load label (optional)
+  stop_playlist   # a running playlist would change the segments under the preset being saved
   post /json/state "$(state_for "$3" "$4" "$5")"
-  sleep 2
+  sleep "$(( ${APPLY_SETTLE:-1} * 2 ))"
   post /json/state "$(python3 -c 'import json,sys; d = {"on":True,"psave":int(sys.argv[1]),"n":sys.argv[2],"ib":False,"sb":True}
 if sys.argv[3]: d["ql"] = sys.argv[3]
 print(json.dumps(d))' "$1" "$2" "${6:-}")"
@@ -125,7 +121,7 @@ sys.exit(0 if ok else 1)' "$1" "$2" "$fx" "$3" "$5" "$palette_id" "${6:-}"; then
     sleep 1
   done
   [ -n "$saved" ] || { echo "preset $1 \"$2\" was not saved as expected (segments 122, $fx, 74; full text; no brightness)" >&2; exit 1; }
-  sleep 3   # WLED writes presets asynchronously; a request that arrives too soon can drop the write
+  sleep "$(( ${APPLY_SETTLE:-1} * 3 ))"   # WLED writes presets asynchronously; a request that arrives too soon can drop the write
 }
 
 # Scroll speed (sx) 214 and 235 are twice as fast as the earlier 110 and 150: Scrolling Text moves one column every
@@ -137,6 +133,7 @@ save_display "$happy_sign" "Happy Hour sign" "$text_happy" 235 1
 # The playlist: preset $happy_sign once, for $HAPPY_HOUR_SECONDS, then the end preset ("end") $boot_preset.
 # This is the exact payload WLED's web UI sends to save a playlist ("o":true marks it as one; see mbr-door/apply.sh).
 dur=$((HAPPY_HOUR_SECONDS * 10))
+stop_playlist
 post /json/state "{\"playlist\":{\"ps\":[$happy_sign],\"dur\":[$dur],\"transition\":[7],\"repeat\":1,\"r\":false,\"end\":$boot_preset},\"on\":true,\"o\":true,\"psave\":$happy_playlist,\"n\":\"Happy Hour\"}"
 saved=""
 for _ in $(seq 1 20); do
@@ -152,7 +149,7 @@ done
 # Back to the normal display, and make it the boot preset.
 post /json/cfg "{\"def\":{\"ps\":$boot_preset}}"
 post /json/state "{\"ps\":$boot_preset}"
-sleep 2
+sleep "$(( ${APPLY_SETTLE:-1} * 2 ))"
 boot="$(get /json/info | python3 -c 'import json,sys; print(json.load(sys.stdin)["leds"]["bootps"])')"
 [ "$boot" = "$boot_preset" ] || { echo "boot preset is $boot, expected $boot_preset" >&2; exit 1; }
 echo "done on $host: preset $boot_preset \"Birdie's Bar\" is the boot preset; preset $happy_playlist \"Happy Hour\" shows preset $happy_sign for $((HAPPY_HOUR_SECONDS / 60)) minutes, then returns to preset $boot_preset"

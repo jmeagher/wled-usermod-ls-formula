@@ -27,6 +27,7 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib.sh
 . "$here/../lib.sh"
 dev_init "${1:-mbr-door.local}"
 fall_playlist=2
