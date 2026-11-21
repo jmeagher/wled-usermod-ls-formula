@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SECRETS = REPO / ".wled.secrets"
 DEFAULT_WLED_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "wled-ls-formula" / "WLED"
 DEFAULT_ENV = "lsf_esp32c6_4MB"
+DEFAULT_BACKUP_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "wled-ls-formula" / "backups"
 
 # Digital LED chips: name -> WLED bus type id (wled00/const.h). Add rows here to support more chips.
 LED_TYPES = {
@@ -180,32 +181,53 @@ def validate_strips(strips: list[Strip], board: dict) -> list[str]:
 SECRET_KEYS = {"WIFI_SSID", "WIFI_PASSWORD", "AP_PASSWORD"}
 
 
+def _secret_value(raw: str, n: int) -> str:
+    """The value part of a KEY=VALUE line. A quoted value ends at its closing quote (anything after it must be blank or
+    a '#' comment). An unquoted value ends at the first whitespace followed by '#', so `KEY=abc  # note` is `abc`;
+    a value that contains ' #' or has leading/trailing spaces must be quoted."""
+    value = raw.strip()
+    if value[:1] in ("'", '"'):
+        end = value.find(value[0], 1)
+        if end < 0:
+            raise ProvisionError(f"secrets file line {n}: unterminated {value[0]} quote")
+        rest = value[end + 1:].strip()
+        if rest and not rest.startswith("#"):
+            raise ProvisionError(f"secrets file line {n}: unexpected text after the closing quote (use # for a comment)")
+        return value[1:end]
+    if value.startswith("#"):
+        raise ProvisionError(f"secrets file line {n}: a value starting with '#' must be quoted (\"#...\"); "
+                             f"for an empty value write nothing after '='")
+    return re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+
+
 def parse_secrets(text: str) -> dict[str, str]:
-    """KEY=VALUE lines; '#' starts a comment line; matching single or double quotes around a value are removed."""
+    """KEY=VALUE lines; '#' starts a comment line, or a trailing comment after whitespace (see _secret_value);
+    single or double quotes around a value are removed."""
     out: dict[str, str] = {}
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         key, sep, value = line.partition("=")
-        key, value = key.strip(), value.strip()
+        key = key.strip()
         if not sep or not key:
             raise ProvisionError(f"secrets file line {n}: expected KEY=VALUE")
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
         if key not in SECRET_KEYS:
             raise ProvisionError(f"secrets file line {n}: unknown key {key!r}; known: {', '.join(sorted(SECRET_KEYS))}")
-        out[key] = value
+        out[key] = _secret_value(value, n)
     return out
 
 
-def load_secrets(path: Path) -> dict[str, str]:
+def load_secrets(path: Path, allow_insecure: bool = False) -> dict[str, str]:
     if not path.is_file():
         raise ProvisionError(f"{path} not found. Create it from the template:\n"
-                             f"    cp {REPO / '.wled.secrets.example'} {path}   # then edit it\n"
+                             f"    cp {REPO / '.wled.secrets.example'} {path} && chmod 600 {path}   # then edit it\n"
                              f"or pass --no-wifi to skip the home WiFi.")
     if path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-        print(f"warning: {path} is readable by other users; run: chmod 600 {path}", file=sys.stderr)
+        msg = f"{path} is accessible by other users and holds your WiFi password; run: chmod 600 {path}"
+        if not allow_insecure:
+            raise ProvisionError(msg + "\n(or pass --allow-insecure-secrets to use it anyway)")
+        print(f"warning: {msg}", file=sys.stderr)
     return parse_secrets(path.read_text(encoding="utf-8"))
 
 
@@ -304,27 +326,76 @@ def find_port(explicit: str | None) -> str:
     return found[0]
 
 
-def fs_partition(wled_dir: Path, env: str) -> tuple[int, int]:
-    """(offset, size) of the LittleFS partition the firmware for this PlatformIO env was built with."""
+def json_from_output(text: str):
+    """Parse the JSON document in a tool's stdout, ignoring warnings or banners printed before it."""
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"^[\[{]", text, re.M):
+        try:
+            return decoder.raw_decode(text[m.start():])[0]
+        except ValueError:
+            continue
+    raise ValueError("no JSON document in the output")
+
+
+def _to_int(text: str, what: str, csv: Path) -> int:
+    try:
+        return int(text, 0)
+    except ValueError:
+        raise ProvisionError(f"{csv}: cannot read {what} {text!r} (only plain numbers like 0x1A0000 are supported)") from None
+
+
+def read_partitions(wled_dir: Path, env: str) -> list[tuple[str, str, str, int, int]]:
+    """(name, type, subtype, offset, size) rows of the partition table the firmware for this PlatformIO env uses."""
     if not (wled_dir / "platformio.ini").is_file():
         raise ProvisionError(f"no WLED checkout at {wled_dir}; run board_setup/c6-install.sh build first")
-    r = subprocess.run(["pio", "project", "config", "--json-output"], cwd=wled_dir, capture_output=True, text=True)
+    try:
+        r = subprocess.run(["pio", "project", "config", "--json-output"], cwd=wled_dir, capture_output=True, text=True)
+    except OSError as e:
+        raise ProvisionError(f"cannot run PlatformIO (`pio`): {e}. Install it (pip install platformio) and put it on PATH") from None
     if r.returncode != 0:
         raise ProvisionError(f"pio project config failed:\n{r.stderr.strip()}")
-    sections = dict((name, dict(items)) for name, items in json.loads(r.stdout))
+    try:
+        sections = dict((name, dict(items)) for name, items in json_from_output(r.stdout))
+    except (ValueError, TypeError):
+        raise ProvisionError(f"could not understand the output of `pio project config --json-output`:\n{r.stdout[-500:]}") from None
     cfg = sections.get(f"env:{env}")
     if cfg is None:
         raise ProvisionError(f"environment {env!r} not found in {wled_dir}/platformio_override.ini")
-    csv = wled_dir / cfg["board_build.partitions"]
-    for line in csv.read_text().splitlines():
+    table = cfg.get("board_build.partitions")
+    if not table:
+        raise ProvisionError(f"environment {env!r} sets no board_build.partitions, so the filesystem location is unknown; "
+                             f"check {wled_dir}/platformio_override.ini")
+    csv = wled_dir / table
+    try:
+        lines = csv.read_text().splitlines()
+    except OSError as e:
+        raise ProvisionError(f"cannot read the partition table {csv}: {e}") from None
+    rows = []
+    for line in lines:
         cols = [c.strip() for c in line.split("#")[0].split(",")]
-        if len(cols) >= 5 and cols[1] == "data" and cols[2] == "spiffs":
-            return int(cols[3], 0), int(cols[4], 0)
-    raise ProvisionError(f"no spiffs/LittleFS partition in {csv}")
+        if len(cols) >= 5 and cols[3] and cols[4]:
+            rows.append((cols[0], cols[1], cols[2], _to_int(cols[3], "an offset", csv), _to_int(cols[4], "a size", csv)))
+    return rows
+
+
+def fs_partition(wled_dir: Path, env: str) -> tuple[int, int]:
+    """(offset, size) of the LittleFS partition the firmware for this PlatformIO env was built with."""
+    for _name, ptype, subtype, offset, size in read_partitions(wled_dir, env):
+        if ptype == "data" and subtype == "spiffs":
+            return offset, size
+    raise ProvisionError(f"no spiffs/LittleFS partition in the partition table of environment {env!r}")
+
+
+def app_partition_size(partitions: list[tuple[str, str, str, int, int]]) -> int | None:
+    """Size of the application partition at 0x10000 (where the firmware installer puts it), if the table lists it."""
+    return next((size for _n, ptype, _s, offset, size in partitions if ptype == "app" and offset == APP_OFFSET), None)
 
 
 def run_tool(cmd: list[str], what: str) -> str:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as e:
+        raise ProvisionError(f"{what}: cannot run {cmd[0]}: {e}") from None
     if r.returncode != 0:
         raise ProvisionError(f"{what} failed (exit {r.returncode}):\n{r.stdout[-1500:]}{r.stderr[-1500:]}")
     return r.stdout
@@ -347,35 +418,73 @@ def parse_mac(esptool_output: str) -> str | None:
 
 
 ESP_IMAGE_MAGIC = 0xE9  # first byte of every ESP bootloader / application image; erased flash reads 0xFF
+APP_OFFSET = 0x10000
+APP_SCAN_MAX = 0x200000  # how much of the application image is searched for WLED_MARKERS
+# Strings that are compiled into every WLED firmware (the default access-point name and password). The app image
+# is searched for them so that a different firmware (or a different project) on the board is never wiped by mistake.
+WLED_MARKERS = (b"WLED-AP", b"wled1234")
 
 
 def has_image(first_bytes: bytes) -> bool:
     return len(first_bytes) > 0 and first_bytes[0] == ESP_IMAGE_MAGIC
 
 
-def probe_board(port: str, chip: str) -> str:
-    """Identify the chip and require firmware on it; return its MAC. Read-only (it does reset the chip)."""
+def looks_like_wled(app_image: bytes) -> bool:
+    return any(m in app_image for m in WLED_MARKERS)
+
+
+def probe_board(port: str, chip: str, app_size: int | None = None, force: bool = False) -> str:
+    """Identify the chip and require WLED firmware on it; return its MAC. Read-only (it does reset the chip).
+    force=True skips the check that the application is WLED (a missing image is still an error)."""
     base = esptool_cmd(chip, port)
-    mac, missing = None, []
+    mac, missing, app = None, [], b""
     with tempfile.TemporaryDirectory(prefix="wled-probe-") as tmp:
-        for what, addr in (("bootloader", 0x0), ("WLED application", 0x10000)):
+        for what, addr in (("bootloader", 0x0), ("WLED application", APP_OFFSET)):
             out = Path(tmp) / f"{addr:x}.bin"
             banner = run_tool(base + ["read_flash", f"0x{addr:x}", "4", str(out)], f"esptool read_flash 0x{addr:x}")
             mac = mac or parse_mac(banner)
             if not has_image(out.read_bytes()):
                 missing.append(what)
-    if mac is None:
-        raise ProvisionError("could not read the chip's MAC address from esptool")
-    shown = ":".join(mac[i:i + 2] for i in range(0, 12, 2))
-    if missing:
-        raise ProvisionError(f"the board on {port} (MAC {shown}) has no {' and no '.join(missing)}, so it would not run the "
-                             f"configuration. Install the firmware first: board_setup/c6-install.sh flash "
-                             f"(or use `all` instead of `provision`).")
-    print(f"board: ESP32 MAC {shown} on {port}, firmware present")
+        if mac is None:
+            raise ProvisionError("could not read the chip's MAC address from esptool")
+        shown = ":".join(mac[i:i + 2] for i in range(0, 12, 2))
+        if missing:
+            raise ProvisionError(f"the board on {port} (MAC {shown}) has no {' and no '.join(missing)}, so it would not run the "
+                                 f"configuration. Install the firmware first: board_setup/c6-install.sh flash "
+                                 f"(or use `all` instead of `provision`).")
+        if not force:
+            scan = min(app_size or APP_SCAN_MAX, APP_SCAN_MAX)
+            out = Path(tmp) / "app.bin"
+            print(f"checking that the firmware on {port} is WLED (reading {scan // 1024} KiB) ...")
+            run_tool(base + ["read_flash", f"0x{APP_OFFSET:x}", f"0x{scan:x}", str(out)], "esptool read_flash (application)")
+            app = out.read_bytes()
+    if not force and not looks_like_wled(app):
+        raise ProvisionError(f"the application on the board on {port} (MAC {shown}) does not look like WLED, and provisioning "
+                             f"would erase its whole filesystem. If you are sure this is the right board, pass --force.")
+    print(f"board: ESP32 MAC {shown} on {port}, " + ("firmware present (not checked: --force)" if force else "WLED firmware present"))
     return mac
 
 
-def build_and_flash(files: dict[str, dict], offset: int, size: int, port: str, chip: str) -> None:
+def backup_filesystem(port: str, chip: str, offset: int, size: int, mac: str, backup_dir: Path) -> Path:
+    """Copy the board's current filesystem partition to a timestamped file (private: it holds the WiFi password)."""
+    backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        backup_dir.chmod(0o700)
+    except OSError:
+        pass
+    dest = backup_dir / f"littlefs-{mac}-{time.strftime('%Y%m%d-%H%M%S')}.bin"
+    # Create the file ourselves with 0600 so esptool never has to: it only overwrites its contents.
+    os.close(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    try:
+        run_tool(esptool_cmd(chip, port) + ["read_flash", f"0x{offset:x}", f"0x{size:x}", str(dest)], "esptool read_flash (backup)")
+    except ProvisionError:
+        dest.unlink(missing_ok=True)
+        raise
+    dest.chmod(0o600)
+    return dest
+
+
+def build_and_flash(files: dict[str, dict], offset: int, size: int, port: str, chip: str, mac: str, backup_dir: Path) -> None:
     mklittlefs = next(iter(sorted(glob.glob(str(pio_home() / "packages" / "tool-mklittlefs*" / "mklittlefs")))), None)
     if not mklittlefs:
         raise ProvisionError("PlatformIO's mklittlefs not found; build the firmware once with "
@@ -389,8 +498,18 @@ def build_and_flash(files: dict[str, dict], offset: int, size: int, port: str, c
                 (root / fname).write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         image = Path(tmp) / "littlefs.bin"
         run_tool([mklittlefs, "-c", str(root), "-b", "4096", "-p", "256", "-s", str(size), str(image)], "mklittlefs")
+        backup = backup_filesystem(port, chip, offset, size, mac, backup_dir)
+        print(f"backed up the current filesystem to {backup} (private, contains the old WiFi password; delete it when no longer needed)")
         print(f"writing {image.stat().st_size // 1024} KiB filesystem image to {port} at 0x{offset:x} ...")
         run_tool(esptool_cmd(chip, port) + ["write_flash", f"0x{offset:x}", str(image)], "esptool write_flash")
+
+
+def write_private(path: Path, text: str) -> None:
+    """Write a file that only its owner can read, never even briefly with the default umask."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o600)   # a file that already existed keeps its old mode otherwise
+        f.write(text)
 
 
 def http_json(url: str, timeout: float = 4.0):
@@ -398,7 +517,7 @@ def http_json(url: str, timeout: float = 4.0):
         return json.load(r)
 
 
-def verify(mdns: str, name: str, strips: list[Strip], wait: float, mac: str | None = None) -> None:
+def verify(mdns: str, name: str, strips: list[Strip], wait: float, mac: str | None = None, ssid: str | None = None) -> None:
     """Wait for <mdns>.local to answer and compare what the device reports with what was requested."""
     base = f"http://{mdns}.local"
     deadline, last = time.time() + wait, None
@@ -419,6 +538,12 @@ def verify(mdns: str, name: str, strips: list[Strip], wait: float, mac: str | No
     if mac and info.get("mac", "").lower() != mac:
         problems.append(f"answering device has MAC {info.get('mac')}, but the board just written is {mac}: another WLED "
                         f"device is using the name or address {mdns}.local")
+    # WLED's API does not say which network the board joined, only which one it is configured for. Reaching it at
+    # <mdns>.local from this machine is the evidence that it did join one.
+    if ssid is not None:
+        got_ssid = [i.get("ssid") for i in cfg.get("nw", {}).get("ins", [])][:1]
+        if got_ssid != [ssid]:
+            problems.append(f"configured WiFi network is {got_ssid[0] if got_ssid else None!r}, expected {ssid!r}")
     if info.get("name") != name:
         problems.append(f"name is {info.get('name')!r}, expected {name!r}")
     total = sum(s.length for s in strips)
@@ -452,6 +577,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wled-dir", type=Path, default=Path(os.environ.get("WLED_DIR", DEFAULT_WLED_DIR)))
     p.add_argument("--dry-run", action="store_true", help="validate and show the result; touch nothing")
     p.add_argument("--out", type=Path, help="also write the (secret-bearing) files to this directory; implies --dry-run")
+    p.add_argument("--force", action="store_true",
+                   help="flash even if the application on the board is not recognised as WLED")
+    p.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR,
+                   help=f"where the board's old filesystem is saved before it is replaced (default {DEFAULT_BACKUP_DIR})")
+    p.add_argument("--allow-insecure-secrets", action="store_true",
+                   help="use a secrets file that other users can read (only warns)")
     p.add_argument("--no-verify", action="store_true", help="do not wait for the device on the network")
     p.add_argument("--verify-wait", type=float, default=90, help="seconds to wait for the device (default 90)")
     a = p.parse_args(argv)
@@ -461,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         strips = [parse_strip(s, board) for s in a.strip]
         warnings = validate_strips(strips, board)
         check_names(a.name, a.mdns, a.ap_ssid)
-        secrets = {} if a.no_wifi and not a.secrets.is_file() else load_secrets(a.secrets)
+        secrets = {} if a.no_wifi and not a.secrets.is_file() else load_secrets(a.secrets, a.allow_insecure_secrets)
         files = build_files(name=a.name, mdns=a.mdns, ap_ssid=a.ap_ssid, secrets=secrets,
                             use_wifi=not a.no_wifi, strips=strips)
         for w in warnings:
@@ -472,25 +603,29 @@ def main(argv: list[str] | None = None) -> int:
         print(redact(files))
         if a.dry_run or a.out:
             if a.out:
-                a.out.mkdir(parents=True, exist_ok=True)
+                a.out.mkdir(parents=True, exist_ok=True, mode=0o700)
                 for fname, data in files.items():
-                    path = a.out / fname
-                    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-                    path.chmod(0o600)
+                    write_private(a.out / fname, json.dumps(data, indent=2))
                 print(f"wrote {', '.join(files)} to {a.out} (contains passwords)")
             return 0
 
-        offset, size = fs_partition(a.wled_dir, a.env)
+        partitions = read_partitions(a.wled_dir, a.env)
+        offset, size = next(((o, z) for _n, t, st, o, z in partitions if t == "data" and st == "spiffs"), (None, None))
+        if offset is None:
+            raise ProvisionError(f"no spiffs/LittleFS partition in the partition table of environment {a.env!r}")
         port = find_port(a.port)
         chip = "esp32c6" if a.board == "esp32c6" else a.board
-        mac = probe_board(port, chip)
-        build_and_flash(files, offset, size, port, chip)
+        mac = probe_board(port, chip, app_partition_size(partitions), a.force)
+        build_and_flash(files, offset, size, port, chip, mac, a.backup_dir)
         if a.no_verify or a.no_wifi:
             print("done (not verified over the network).")
         else:
-            verify(a.mdns, a.name, strips, a.verify_wait, mac)
+            verify(a.mdns, a.name, strips, a.verify_wait, mac, secrets.get("WIFI_SSID"))
         return 0
     except ProvisionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

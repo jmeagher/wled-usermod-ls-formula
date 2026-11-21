@@ -5,8 +5,13 @@ Run: python3 -I -m unittest discover -s tests
 import importlib.util
 import json
 import os
+import stat
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 _spec = importlib.util.spec_from_file_location("provision", os.path.join(ROOT, "board_setup", "provision.py"))
@@ -109,20 +114,218 @@ class Secrets(unittest.TestCase):
             with self.subTest(bad), self.assertRaises(P.ProvisionError):
                 P.parse_secrets(bad)
 
+    def test_trailing_comments(self):
+        got = P.parse_secrets("WIFI_SSID=home   # my network\nWIFI_PASSWORD=pa#ss\nAP_PASSWORD=\"a #b c\"  # quoted\n")
+        self.assertEqual(got, {"WIFI_SSID": "home", "WIFI_PASSWORD": "pa#ss", "AP_PASSWORD": "a #b c"})
+        self.assertEqual(P.parse_secrets("WIFI_PASSWORD=")["WIFI_PASSWORD"], "")
+        self.assertEqual(P.parse_secrets('WIFI_PASSWORD="#hash"')["WIFI_PASSWORD"], "#hash")
+        with self.assertRaises(P.ProvisionError):   # would silently become an empty (open network) password
+            P.parse_secrets("WIFI_PASSWORD=# open network")
+
+    def test_readme_example_parses(self):
+        with open(os.path.join(ROOT, "board_setup", "Readme.md"), encoding="utf-8") as f:
+            block = f.read().split("```ini\n")[1].split("```")[0]
+        got = P.parse_secrets(block)
+        self.assertEqual(got["WIFI_SSID"], "my-home-network")
+        self.assertEqual(got["WIFI_PASSWORD"], "...")
+
+    def test_bad_quotes(self):
+        for bad in ['WIFI_SSID="open', "WIFI_SSID='a' b", 'WIFI_SSID="a"b']:
+            with self.subTest(bad), self.assertRaises(P.ProvisionError):
+                P.parse_secrets(bad)
+
     def test_example_file_parses(self):
         with open(os.path.join(ROOT, ".wled.secrets.example"), encoding="utf-8") as f:
             self.assertEqual(set(P.parse_secrets(f.read())), P.SECRET_KEYS)
 
 
+class SecretsFile(unittest.TestCase):
+    def make(self, mode):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        path = Path(d.name) / "secrets"
+        path.write_text("WIFI_SSID=home\n")
+        path.chmod(mode)
+        return path
+
+    def test_private_file_is_read(self):
+        self.assertEqual(P.load_secrets(self.make(0o600)), {"WIFI_SSID": "home"})
+
+    def test_group_or_world_readable_is_refused(self):
+        for mode in (0o644, 0o640, 0o604):
+            with self.subTest(oct(mode)), self.assertRaises(P.ProvisionError) as cm:
+                P.load_secrets(self.make(mode))
+            self.assertIn("chmod 600", str(cm.exception))
+
+    def test_override_only_warns(self):
+        with mock.patch.object(sys, "stderr") as err:
+            self.assertEqual(P.load_secrets(self.make(0o644), allow_insecure=True), {"WIFI_SSID": "home"})
+        self.assertTrue(err.write.called)
+
+    def test_write_private_is_0600(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        fresh, old = Path(d.name) / "a", Path(d.name) / "b"
+        old.write_text("x")
+        old.chmod(0o644)
+        for path in (fresh, old):
+            P.write_private(path, "secret")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(path.read_text(), "secret")
+
+
+class FakeEsptool:
+    """Stands in for P.run_tool: answers esptool read_flash from a dict {offset: bytes} and records every call."""
+    BANNER = "Chip type:  ESP32-C6FH4\nBASE MAC:           02:00:00:00:00:01\n"
+
+    def __init__(self, flash):
+        self.flash, self.calls = flash, []
+
+    def __call__(self, cmd, what):
+        self.calls.append(cmd)
+        if "read_flash" in cmd:
+            i = cmd.index("read_flash")
+            addr, size, out = int(cmd[i + 1], 0), int(cmd[i + 2], 0), cmd[i + 3]
+            data = self.flash.get(addr, b"\xff" * size)
+            Path(out).write_bytes(data[:size])
+        return self.BANNER
+
+
+class BoardGuards(unittest.TestCase):
+    WLED_APP = b"\xe9\x03" + b"\0" * 100 + b"WLED-AP" + b"\0" * 100
+    OTHER_APP = b"\xe9\x03" + b"\0" * 100 + b"blinky" + b"\0" * 100
+
+    def probe(self, flash, **kw):
+        fake = FakeEsptool(flash)
+        with mock.patch.object(P, "run_tool", fake), mock.patch.object(P, "esptool_cmd", lambda chip, port: ["esptool"]), \
+                mock.patch("builtins.print"):
+            return P.probe_board("/dev/fake", "esp32c6", **kw), fake
+
+    def test_wled_app_accepted(self):
+        mac, _ = self.probe({0x0: b"\xe9\0\0\0", 0x10000: self.WLED_APP}, app_size=len(self.WLED_APP))
+        self.assertEqual(mac, "020000000001")
+
+    def test_foreign_app_refused_unless_forced(self):
+        flash = {0x0: b"\xe9\0\0\0", 0x10000: self.OTHER_APP}
+        with self.assertRaises(P.ProvisionError) as cm:
+            self.probe(flash, app_size=len(self.OTHER_APP))
+        self.assertIn("--force", str(cm.exception))
+        mac, fake = self.probe(flash, app_size=len(self.OTHER_APP), force=True)
+        self.assertEqual(mac, "020000000001")
+        self.assertEqual(len(fake.calls), 2)   # --force does not even read the application
+
+    def test_missing_app_refused_even_when_forced(self):
+        with self.assertRaises(P.ProvisionError):
+            self.probe({0x0: b"\xe9\0\0\0"}, force=True)
+
+    def test_backup_is_private_and_holds_the_old_filesystem(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        old = b"old filesystem with wifi psk"
+        fake = FakeEsptool({0x300000: old})
+        with mock.patch.object(P, "run_tool", fake), mock.patch.object(P, "esptool_cmd", lambda chip, port: ["esptool"]):
+            dest = P.backup_filesystem("/dev/fake", "esp32c6", 0x300000, len(old), "020000000001", Path(d.name) / "bk")
+        self.assertEqual(dest.read_bytes(), old)
+        self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(dest.parent.stat().st_mode), 0o700)
+        self.assertIn("020000000001", dest.name)
+
+    def test_failed_backup_leaves_no_file_and_blocks_the_flash(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        calls = []
+
+        def run_tool(cmd, what):
+            calls.append(what)
+            if "read_flash" in cmd:
+                raise P.ProvisionError("boom")
+            return ""
+        with mock.patch.object(P, "run_tool", run_tool), mock.patch.object(P, "esptool_cmd", lambda chip, port: ["esptool", "read_flash"]), \
+                mock.patch.object(P.glob, "glob", lambda pat: ["/fake/mklittlefs"]):
+            with self.assertRaises(P.ProvisionError):
+                P.build_and_flash({"cfg.json": {"a": 1}}, 0x300000, 4096, "/dev/fake", "esp32c6", "020000000001", Path(d.name) / "bk")
+        self.assertEqual(list((Path(d.name) / "bk").iterdir()), [])
+        self.assertFalse(any("write_flash" in c for c in calls))
+
+
+class PioConfig(unittest.TestCase):
+    CSV = "# Name, Type, SubType, Offset, Size\nnvs, data, nvs, 0x9000, 0x5000\napp0, app, ota_0, 0x10000, 0x1A0000\nspiffs, data, spiffs, 0x300000, 0x100000\n"
+
+    def setup_dir(self, csv, **sections):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        wled = Path(d.name)
+        (wled / "platformio.ini").write_text("")
+        (wled / "p.csv").write_text(csv)
+        return wled
+
+    def run_with(self, wled, stdout="", returncode=0, exc=None, env_items=(("board_build.partitions", "p.csv"),)):
+        out = stdout or json.dumps([["env:e", list(map(list, env_items))]])
+
+        def fake(*a, **k):
+            if exc:
+                raise exc
+            return subprocess.CompletedProcess(a, returncode, out, "stderr text")
+        with mock.patch.object(P.subprocess, "run", fake):
+            return P.read_partitions(wled, "e")
+
+    def test_reads_table_and_tolerates_a_preamble(self):
+        wled = self.setup_dir(self.CSV)
+        rows = self.run_with(wled, "Warning: something [not json]\nupdate available\n" + json.dumps([["env:e", [["board_build.partitions", "p.csv"]]]]))
+        self.assertIn(("spiffs", "data", "spiffs", 0x300000, 0x100000), rows)
+        self.assertEqual(P.app_partition_size(rows), 0x1A0000)
+        with mock.patch.object(P, "read_partitions", lambda *a: rows):
+            self.assertEqual(P.fs_partition(wled, "e"), (0x300000, 0x100000))
+
+    def test_errors_become_provision_errors(self):
+        wled = self.setup_dir(self.CSV)
+        cases = {
+            "no pio": dict(exc=FileNotFoundError("pio")),
+            "pio fails": dict(returncode=1),
+            "not json": dict(stdout="nothing useful here"),
+            "no partitions key": dict(env_items=()),
+            "missing csv": dict(env_items=(("board_build.partitions", "nope.csv"),)),
+        }
+        for label, kw in cases.items():
+            with self.subTest(label), self.assertRaises(P.ProvisionError):
+                self.run_with(wled, **kw)
+        bad = self.setup_dir("spiffs, data, spiffs, soon, 0x1000\n")
+        with self.assertRaises(P.ProvisionError):
+            self.run_with(bad)
+
+    def test_run_tool_missing_binary(self):
+        with mock.patch.object(P.subprocess, "run", side_effect=FileNotFoundError("x")):
+            with self.assertRaises(P.ProvisionError):
+                P.run_tool(["nonexistent"], "thing")
+
+
+class VerifySsid(unittest.TestCase):
+    def verify(self, cfg_ssid):
+        info = {"mac": "020000000001", "name": "Desk", "leds": {"count": 5}, "ip": "1.2.3.4", "ver": "x"}
+        cfg = {"nw": {"ins": [{"ssid": cfg_ssid}]},
+               "hw": {"led": {"ins": [{"pin": [7], "len": 5, "type": 22, "order": 0}]}}}
+        with mock.patch.object(P, "http_json", lambda url, timeout=4.0: info if url.endswith("info") else cfg), \
+                mock.patch("builtins.print"):
+            P.verify("desk", "Desk", [P.Strip("ws2812", "grb", 7, 5)], 1, "020000000001", "home")
+
+    def test_matching_ssid(self):
+        self.verify("home")
+
+    def test_wrong_ssid(self):
+        with self.assertRaises(P.ProvisionError) as cm:
+            self.verify("other")
+        self.assertIn("WiFi network", str(cm.exception))
+
+
 class BoardProbe(unittest.TestCase):
     BANNER = ("Connected to ESP32-C6 on /dev/cu.usbmodem1101:\nChip type:  ESP32-C6FH4\n"
-              "MAC:                98:88:e0:ff:fe:71:09:E4\nBASE MAC:           98:88:e0:71:09:E4\nMAC_EXT:            ff:fe\n")
+              "MAC:                02:00:00:ff:fe:00:00:01\nBASE MAC:           02:00:00:00:00:01\nMAC_EXT:            ff:fe\n")
 
     def test_parse_mac_prefers_base_mac(self):
-        self.assertEqual(P.parse_mac(self.BANNER), "9888e0710 9e4".replace(" ", ""))
+        self.assertEqual(P.parse_mac(self.BANNER), "020000000001")
 
     def test_parse_mac_six_byte_chips(self):
-        self.assertEqual(P.parse_mac("Chip is ESP32-D0WD\nMAC: 24:6f:28:aa:bb:cc\nUploading stub"), "246f28aabbcc")
+        self.assertEqual(P.parse_mac("Chip is ESP32-D0WD\nMAC: 02:00:00:aa:bb:cc\nUploading stub"), "020000aabbcc")
 
     def test_parse_mac_absent(self):
         self.assertIsNone(P.parse_mac("A fatal error occurred"))

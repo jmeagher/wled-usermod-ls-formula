@@ -9,10 +9,11 @@ Uses only the standard library and WLED's normal JSON API (POST /json/state).
   lsfx.py HOST pull SLOT [FILE]
   lsfx.py HOST clear SLOT
 
-HOST is an address or mDNS name (for example wled-1234.local or 192.168.1.50).
+HOST is an address or mDNS name (for example wled-1234.local or 192.0.2.50).
 """
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -24,7 +25,17 @@ class LsfxError(Exception):
     pass
 
 
+HOST_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?(:[0-9]{1,5})?")
+
+
+def check_host(host):
+    """The host goes straight into a URL: only a name or IPv4 address with an optional :port is accepted."""
+    if not HOST_RE.fullmatch(host):
+        raise LsfxError("invalid host %r: use a name or IP address, optionally with :port" % host)
+
+
 def _request(host, method, body=None):
+    check_host(host)
     url = "http://%s/json/state" % host
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
