@@ -340,6 +340,71 @@ static void testEstimate() {
   }
 }
 
+// Regression: a `let` must end at a newline, ';' or the end of the source, like every other statement.
+static void testLetTerminator() {
+  CHECK(fails("let a = 1 a", "unexpected text after expression"));
+  CHECK(fails("let a = 1 hsv(x, 255, 255)", "unexpected text after expression"));
+  CHECK(fails("let a = 1\nlet b = 2 b", "unexpected text after expression", 2));
+  CHECK(evalExpr("let a = 1; a") == 1);
+  CHECK(evalExpr("let a = 1 # comment\na") == 1);
+  CHECK(evalExpr("let a = (1 +\n 2)\na") == 3);
+  CHECK(evalExpr("let a = 4;let b = 5;a*b") == 20);
+}
+
+// Regression: the smallest 32-bit value can be written in decimal.
+static void testMinLiteral() {
+  CHECK(evalExpr("-2147483648 == 0x80000000") == 1);
+  CHECK(evalExpr("- 2147483648 == 0x80000000") == 1);
+  CHECK(evalExpr("-2147483648 < 0") == 1);
+  CHECK(evalExpr("-2147483648 + 1 == -2147483647") == 1);
+  CHECK(evalExpr("(-2147483648 >> 31) & 1") == 1);           // sign bit set: it really is INT32_MIN
+  CHECK(evalExpr("--2147483648 == -2147483648") == 1);         // negating INT32_MIN wraps, as documented
+  CHECK(fails("2147483648", "too large"));                      // without the minus it does not fit
+  CHECK(fails("-2147483649", "too large"));
+  CHECK(fails("1 - 2147483648", "too large"));                 // binary minus: the literal stands alone
+  CHECK(fails("-(2147483648)", "too large"));
+  CHECK(fails("-!2147483648", "too large"));
+  CHECK(fails("let a = -2147483648\n2147483648", "too large", 2));
+}
+
+// Regression: parser recursion is capped at LSF_MAX_NEST (the compiler runs on the web server's task stack).
+static void testNestLimit() {
+  std::string ok, over;
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) ok += "(";
+  ok += "1";
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) ok += ")";
+  LsfProgram p;
+  CHECK(compile(ok.c_str(), &p));
+  over = "(" + ok + ")";
+  CHECK(fails(over.c_str(), "too deep"));
+  std::string neg(LSF_MAX_NEST - 1, '-'); neg += "1";
+  CHECK(compile(neg.c_str(), &p));
+  CHECK(fails(("--" + neg).c_str(), "too deep"));
+  std::string call;                                              // sin(sin(...)): one level per call
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) call += "sin(";
+  call += "x";
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) call += ")";
+  CHECK(compile(call.c_str(), &p));
+  CHECK(fails(("sin(" + call + ")").c_str(), "too deep"));
+}
+
+// Defense in depth: a program that skipped the verifier (or was corrupted in memory) must not make the interpreter
+// touch memory outside its own stack. Run under ASan by tests/run.sh.
+static void testUnverifiedRun() {
+  LsfProgram p; memset(&p, 0, sizeof(p));
+  LsfCtx c = baseCtx();
+  p.n = LSF_MAX_INSNS;                                           // push far past LSF_MAX_STACK
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_CONST; p.code[k].imm = (int32_t)k; }
+  (void)lsf_run(p, c);
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_ADD; }   // pop far below zero
+  (void)lsf_run(p, c);
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_CALL; p.code[k].imm = FN_BLEND; }   // 3-argument calls on an empty stack
+  (void)lsf_run(p, c);
+  p.n = 0xFFFF;                                                  // instruction count beyond the code array
+  (void)lsf_run(p, c);
+  CHECK(true);
+}
+
 static void testExamplesCompile() {
   // The shipped examples must all be valid.
   static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise"};
@@ -358,6 +423,7 @@ static void testExamplesCompile() {
 int main() {
   testArithmetic(); testMultiline(); testBuiltins(); testNoise(); testInputsAndLocals(); testRejects();
   testLimits(); testVerifier(); testFuzz(); testCallbacks(); testCost(); testEstimate(); testExamplesCompile();
+  testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun();
   printf("%d checks, %d failures\n", g_run, g_fail);
   return g_fail ? 1 : 0;
 }

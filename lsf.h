@@ -21,6 +21,13 @@
 #define LSF_MAX_STACK 16    // evaluation stack depth
 #endif
 #define LSF_MAX_NAME    12    // characters in a `let` name
+// Parser recursion limit: one level per '(' or call argument and per unary operator. The compiler runs on the web
+// server's task stack (8 KB on ESP32): measured with -fstack-usage, one level of parentheses costs about 128 bytes on
+// the ESP32-C6 (RISC-V) and about 96 bytes on the ESP32 (Xtensa), so 16 levels stay near 2 KB. Values deeper than
+// LSF_MAX_STACK cannot be built anyway.
+#ifndef LSF_MAX_NEST
+#define LSF_MAX_NEST    16
+#endif
 
 // Read-only inputs, in the order of the `in` array of LsfCtx.
 enum LsfInput {
