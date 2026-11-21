@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <string>
+#include <vector>
+#include <ctype.h>
 
 static int g_fail = 0, g_run = 0;
 #define CHECK(cond) do { g_run++; if (!(cond)) { g_fail++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -551,6 +553,63 @@ static void testFrameGuard() {
   CHECK(q.admit(5, 2, 2, 1, 1) == G::SKIP);   // bad slot id
 }
 
+// Finding: the settings page shows each source in an <input type=text>, which drops newlines (and a raw '"' would end
+// the attribute), so saving the page broke multi-line formulas. The stored form survives that round trip.
+static std::string browserRoundTrip(const std::string& v) {   // what an <input type=text value="..."> posts back
+  std::string out;
+  for (char c : v) if (c != '\n' && c != '\r') out += c;
+  return out;
+}
+static void checkStoredForm(const std::string& src) {
+  std::vector<char> enc(2 * src.size() + 1), dec(src.size() + 1);
+  const size_t n = lsfStoreEncode(src.data(), src.size(), enc.data(), enc.size());
+  CHECK(n <= 2 * src.size());
+  CHECK(n == strlen(enc.data()));
+  const std::string e(enc.data(), n);
+  CHECK(e.find('\n') == std::string::npos && e.find('\r') == std::string::npos && e.find('"') == std::string::npos);
+  for (size_t k = 0; k + 1 < e.size(); k++)   // no '&' that HTML could read as a character reference
+    if (e[k] == '&') CHECK(!isalnum((unsigned char)e[k + 1]) && e[k + 1] != '#');
+  const std::string back = browserRoundTrip(e);
+  size_t len = 0;
+  CHECK(lsfStoreDecode(back.c_str(), dec.data(), dec.size(), &len));
+  CHECK(len == src.size() && memcmp(dec.data(), src.data(), len) == 0);
+}
+static void testStoredForm() {
+  checkStoredForm("");
+  checkStoredForm("let a = x\nhsv(a, 255, 255)");
+  checkStoredForm("# \"quoted\" & &amp; &#38; \\n \\\\ back\\\r\nx && 1 & 2 | t&mask");
+  checkStoredForm("&");
+  checkStoredForm("\\");
+  checkStoredForm("x % 7 < 3 > 1");
+  static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise",
+                                "palette_fill", "palette_twinkle", "end_flames", "palette_drops", "bar_sparkles"};
+  for (unsigned k = 0; k < sizeof(files) / sizeof(files[0]); k++) {
+    std::string path = std::string(LSF_EXAMPLES_DIR) + "/" + files[k] + ".lsf";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) { g_fail++; continue; }
+    char buf[LSF_MAX_SRC + 2]; size_t n = fread(buf, 1, sizeof(buf), f); fclose(f);
+    checkStoredForm(std::string(buf, n));
+  }
+  for (int iter = 0; iter < 3000; iter++) {   // any bytes except NUL
+    std::string s;
+    const int len = (int)(rnd() % 64);
+    for (int k = 0; k < len; k++) { static const char pick[] = "\\\n\r\"&a#1 x;<>"; s += (rnd() & 1) ? pick[rnd() % 13] : (char)(1 + rnd() % 255); }
+    checkStoredForm(s);
+  }
+  // Worst case is two bytes per byte; a short buffer is reported and still NUL-terminated.
+  std::string worst(LSF_MAX_SRC, '"');
+  char small[8];
+  CHECK(lsfStoreEncode(worst.data(), worst.size(), small, sizeof(small)) == 2 * worst.size());
+  CHECK(strlen(small) < sizeof(small));
+  // Decoding: text typed into the settings page without escapes arrives as typed; too long is refused.
+  char out[32]; size_t len = 0;
+  CHECK(lsfStoreDecode("x % 7 \\z \\", out, sizeof(out), &len) && strcmp(out, "x % 7 \\z \\") == 0);
+  CHECK(lsfStoreDecode("a\\nb\\qc\\ad\\\\", out, sizeof(out)) && strcmp(out, "a\nb\"c&d\\") == 0);
+  CHECK(!lsfStoreDecode("0123456789", out, 10));
+  CHECK(lsfStoreDecode("012345678", out, 10));
+  CHECK(!lsfStoreDecode("", out, 0));
+}
+
 static void testExamplesCompile() {
   // The shipped examples must all be valid.
   static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise"};
@@ -570,7 +629,7 @@ int main() {
   testArithmetic(); testMultiline(); testBuiltins(); testNoise(); testInputsAndLocals(); testRejects();
   testLimits(); testVerifier(); testFuzz(); testCallbacks(); testCost(); testEstimate(); testExamplesCompile();
   testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun(); testCallWeights();
-  testProgramStore(); testSlowFrame(); testFrameGuard();
+  testProgramStore(); testSlowFrame(); testFrameGuard(); testStoredForm();
   printf("%d checks, %d failures\n", g_run, g_fail);
   return g_fail ? 1 : 0;
 }

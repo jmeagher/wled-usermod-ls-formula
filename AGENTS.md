@@ -15,7 +15,7 @@ It is for defining effects **as data**. It is not a general scripting language a
 | Path | Role |
 |---|---|
 | `lsf.h`, `lsf.cpp`, `lsf_sintab.inc` | The engine: compiler, verifier, interpreter, speed estimate. **Plain C++11, no WLED/Arduino includes, no heap, no floats.** Compiled on the desktop for tests and into the firmware. |
-| `lsf_runtime.h` | Run-time support for the WLED side, pure logic: the program store (double buffering between the web task and the render task), the per-frame time budget and status and the per-segment slow-frame counter. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_lsf.cpp`. |
+| `lsf_runtime.h` | Run-time support for the WLED side, pure logic: the program store (double buffering between the web task and the render task), the per-frame time budget and status, the per-segment slow-frame counter, and the stored form of a source in `cfg.json`. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_lsf.cpp`. |
 | `lsf_button.h` | One-button control, pure logic: the click / double-click / hold state machine, the brightness steps and the preset id set. **Header-only C++11, no WLED/Arduino includes**; tested by `tests/test_button.cpp`. |
 | `ls_formula.cpp` | The WLED side: registers effects, receives uploads, persists, renders, and reads the button pin (`pollButton()`, `nextPreset()`, `stepBrightness()`). Compiled only inside a WLED build (`#ifdef ARDUINO_ARCH_ESP32`). |
 | `library.json` | PlatformIO manifest. `libArchive: false` is required by WLED, and `srcFilter` lists exactly the two `.cpp` files so `tools/` and `tests/` (which contain a `main()`) are never linked into firmware. |
@@ -32,10 +32,11 @@ It is for defining effects **as data**. It is not a general scripting language a
 
 ### Lifecycle
 
-1. **Boot.** WLED loads `cfg.json`, then calls `readFromConfig()` (before `setup()`): each stored source is recompiled into its slot. Bytecode is never stored. If the usermod's section is missing it returns `false` so WLED writes defaults.
+1. **Boot.** WLED loads `cfg.json`, then calls `readFromConfig()` (before `setup()`): each stored source (`formula`, in the stored form of `lsf_runtime.h`; older configs have a raw `src`) is recompiled into its slot. Bytecode is never stored. If the usermod's section is missing it returns `false` so WLED writes defaults. Boot results do not touch `g_last`.
 2. **`setup()`.** `strip.addEffect(255, &mode_lsf<S>, g_slots[S].meta)` registers each slot, and the returned id is kept as `fxId`. `registered` becomes true.
 3. **Upload.** `POST /json/state` with `{"lsf":{...}}` reaches `readFromJsonState()`: `acquire a spare buffer -> compile into it -> verify -> budget check -> publish -> configNeedsWrite = true`. The result is stored in `g_last` and returned by `addToJsonState()`.
-4. **Every frame.** WLED calls `mode_lsf<S>()` -> `renderSlot(S)` for each segment running the effect.
+4. **Settings saved / `/json/cfg` posted.** `readFromConfig()` runs again; a slot is recompiled only if its source differs from the installed one, and a failure leaves the slot untouched (reported in `g_last`).
+5. **Every frame.** WLED calls `mode_lsf<S>()` -> `renderSlot(S)` for each segment running the effect.
 
 ### One frame: `renderSlot`
 
@@ -58,7 +59,7 @@ It is for defining effects **as data**. It is not a general scripting language a
 
 ### Memory
 
-Static: `LSF_SLOTS + 1` program buffers of about 2.1 KB (a 256-instruction program is 2 KB, 8 bytes per instruction, plus status), and per slot about 1.2 KB of source, name and metadata. Four slots are about 15.5 KB (about 2.5 KB more than before the spare buffer; an install no longer needs a 2 KB heap temporary). A formula that calls `prev`/`prev2` also uses 6 bytes per pixel of heap while running.
+Static: `LSF_SLOTS + 1` program buffers of about 2.1 KB (a 256-instruction program is 2 KB, 8 bytes per instruction, plus status), and per slot about 1.2 KB of source, name and metadata. Four slots are about 15.5 KB (about 2.5 KB more than before the spare buffer; an install no longer needs a 2 KB heap temporary). Saving the config briefly takes a 2 KB heap buffer for the stored form, reading it 1 KB. A formula that calls `prev`/`prev2` also uses 6 bytes per pixel of heap while running.
 
 ### The speed budget
 

@@ -51,7 +51,7 @@ static LsfProgramStore<LSF_SLOTS> g_store;
 static LsfFrameGuard<LSF_SLOTS> g_frame(LSF_BUDGET_US, LSF_FRAME_BUDGET_US, LSF_SLOW_FRAME_US);
 static uint16_t g_installGen = 0;
 
-// Result of the most recent upload or dry run, reported in the state JSON.
+// Result of the most recent upload, dry run or settings change, reported in the state JSON.
 struct LsfLast {
   int      slot = -1;
   bool     ok = false;
@@ -335,6 +335,56 @@ class LsFormulaUsermod : public Usermod {
     setName(s, idx, nullptr);
   }
 
+  // A source from cfg.json: the "formula" key holds the stored form (lsfStoreDecode), the "src" key of older versions
+  // the raw text. Returns nullptr if neither is present (or on an error, then `why` says what), "" for an empty slot.
+  // `legacy` is set for "src". A decoded source lives in `*heap`, which the caller frees.
+  static const char* configSource(JsonObject e, bool& legacy, char** heap, const char** why) {
+    legacy = false; *heap = nullptr; *why = nullptr;
+    if (e[F("formula")].is<const char*>()) {
+      const size_t cap = LSF_MAX_SRC + 2;   // +1: one byte over the limit still decodes, so the compiler reports it
+      char* buf = new (std::nothrow) char[cap];
+      if (!buf) { *why = "out of memory"; return nullptr; }
+      *heap = buf;
+      if (!lsfStoreDecode(e[F("formula")].as<const char*>(), buf, cap)) { *why = "source too long"; return nullptr; }
+      return buf;
+    }
+    if (e[F("src")].is<const char*>()) { legacy = true; return e[F("src")].as<const char*>(); }
+    return nullptr;
+  }
+
+  // One slot of readFromConfig(): `src` is the configured source (nullptr: none given), `why` a reason it could not be read.
+  void applyConfigSlot(uint8_t k, const char* name, const char* src, const char* why) {
+    LsfSlot& s = g_slots[k];
+    if (why) {
+      LsfLast r; r.slot = k;
+      snprintf(r.msg, sizeof(r.msg), "stored formula: %s", why);
+      if (registered) g_last = r;
+      else { snprintf(s.cfgErr, sizeof(s.cfgErr), "%s", r.msg); setName(s, k, name); }
+      return;
+    }
+    if (!src) { if (name) setName(s, k, name); return; }
+    if (registered && strcmp(src, s.src) == 0) { if (name) setName(s, k, name); return; }   // unchanged: keep it running
+    if (src[0] == 0) {
+      if (registered) { clearSlot(k); configNeedsWrite = true; }
+      setName(s, k, name);
+      return;
+    }
+    LsfLast r;
+    if (install(k, name, src, false, r)) {
+      if (registered) g_last = r;
+      return;
+    }
+    if (registered) {
+      g_last = r;   // the slot keeps its formula; the settings page shows the old source after the save
+    } else {
+      // A stored formula that no longer compiles (for example after a limit change) stays visible but inactive.
+      setName(s, k, name);
+      snprintf(s.cfgErr, sizeof(s.cfgErr), "stored formula: %s", r.msg);
+      strlcpy(s.src, src, sizeof(s.src));
+      s.srcLen = (uint16_t)strlen(s.src);
+    }
+  }
+
  public:
   LsFormulaUsermod() {
     for (uint8_t k = 0; k < LSF_SLOTS; k++) { g_slots[k].src[0] = 0; g_slots[k].cfgErr[0] = 0; g_slots[k].name[0] = 0; g_slots[k].meta[0] = 0; setName(g_slots[k], k, nullptr); }
@@ -445,42 +495,58 @@ class LsFormulaUsermod : public Usermod {
 
   void addToConfig(JsonObject& root) override {
     JsonObject top = root.createNestedObject(FPSTR(_name));
+    // Sources are saved in their stored form (lsf_runtime.h), which survives WLED's usermod settings page. The buffer
+    // is on the heap: this also runs on the web server's task, whose stack is small.
+    const size_t cap = 2 * LSF_MAX_SRC + 1;
+    char* enc = new (std::nothrow) char[cap];
     for (uint8_t k = 0; k < LSF_SLOTS; k++) {
       char key[8];
       snprintf(key, sizeof(key), "s%u", (unsigned)k);
       JsonObject e = top.createNestedObject(key);
-      e[F("name")] = g_slots[k].name;
-      e[F("src")] = g_slots[k].src;
+      const LsfSlot& s = g_slots[k];
+      e[F("name")] = s.name;
+      if (enc && lsfStoreEncode(s.src, s.srcLen, enc, cap) < cap) e[F("formula")] = enc;   // char*: ArduinoJson copies it
+      else e[F("src")] = s.src;   // out of memory: the raw form still persists (readFromConfig reads both)
     }
+    delete[] enc;
     // Button control: pin -1 switches it off. Changing the pin or the polarity takes effect on save (no reboot).
     top[F("button pin")] = btnPin;
     top[F("button active low")] = btnActiveLow;
     top[F("brightness step")] = briStepPct;
   }
 
+  // The settings page shows each formula in its stored form; say how to read it.
+  void appendConfigData(Print& settingsScript) override {
+    for (uint8_t k = 0; k < LSF_SLOTS; k++)
+      settingsScript.printf_P(PSTR("addInfo('%s:s%u:formula',1,'<br><small>\\\\n = new line, \\\\q = &quot;, \\\\a = &amp;, \\\\\\\\ = \\\\; or use tools/lsfx.py</small>');"),
+                              _name, (unsigned)k);
+  }
+
+  // Called at boot (before setup()) with cfg.json, and at run time when the usermod settings page is saved or
+  // /json/cfg is posted. At run time a slot is recompiled only when its source actually changed, so saving the
+  // settings page (for the button, say) neither restarts the formulas nor re-enables one the slow-frame guard
+  // switched off; a changed source that does not compile leaves the slot as it was and is reported in lsf.last.
   bool readFromConfig(JsonObject& root) override {
     JsonObject top = root[FPSTR(_name)];
     if (top.isNull()) return false;   // first boot: let WLED write the defaults
+    bool complete = true;
     for (uint8_t k = 0; k < LSF_SLOTS; k++) {
       char key[8];
       snprintf(key, sizeof(key), "s%u", (unsigned)k);
       JsonObject e = top[key];
       if (e.isNull()) continue;
-      const char* src = e[F("src")] | "";
       const char* name = e[F("name")] | (const char*)nullptr;
-      if (src[0] == 0) { setName(g_slots[k], k, name); continue; }
-      if (!install(k, name, src, false, g_last)) {
-        // A stored formula that no longer compiles (for example after a limit change) stays visible but inactive.
-        setName(g_slots[k], k, name);
-        snprintf(g_slots[k].cfgErr, sizeof(g_slots[k].cfgErr), "stored formula: %s", g_last.msg);
-        strlcpy(g_slots[k].src, src, sizeof(g_slots[k].src));
-        g_slots[k].srcLen = (uint16_t)strlen(g_slots[k].src);
-      }
+      bool legacy;
+      char* heap;
+      const char* why;
+      const char* src = configSource(e, legacy, &heap, &why);
+      if (legacy) complete = false;   // rewrite cfg.json in the current format
+      applyConfigSlot(k, name, src, why);
+      delete[] heap;
     }
 
     // Button settings. A config saved before this feature existed lacks the keys: `complete` is then false, so WLED
     // writes the defaults back and the settings page shows them.
-    bool complete = true;
     int pin = -1;
     complete &= getJsonValue(top[F("button pin")], pin, -1);
     complete &= getJsonValue(top[F("button active low")], btnActiveLow, true);

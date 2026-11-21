@@ -46,7 +46,7 @@ The reply contains an `lsf` object:
 - `slots[].ok` is false when the slot is empty, was switched off, is over budget on a segment, or was skipped because the frame budget ran out; `err` then says why.
 - `segs`, `overSegs` and `skipped` describe the **last complete strip frame**: how many segments drew this slot, how many were blanked because the formula is over budget for that segment, and how many were blanked because the frame budget was used up. They are present only while the effect is running (a formula segment was drawn in the last 2 s). Because they describe a whole frame, `ok` and `err` do not change depending on which of several segments was drawn last.
 - `frame` is the same frame as a whole: the segments drawn with any formula, their summed estimate, the real time they took and how many were skipped. All zero when no formula is running.
-- `last` is the result of the **most recent request**, including dry runs. On failure it has `err`, and for compile errors `line` and `pos`; `line` is `0` for errors that are not about the source, such as an over-budget rejection.
+- `last` is the result of the **most recent request or settings change**, including dry runs (not of the boot-time reload of `cfg.json`). On failure it has `err`, and for compile errors `line` and `pos`; `line` is `0` for errors that are not about the source, such as an over-budget rejection.
 - `estUs` is the estimated frame time for the whole strip, `maxPx` how many LEDs the formula fits in the budget, `avgUs` a moving average of the real frame time and `worstUs` the largest single frame since install. `worstUs` includes preemption by WiFi and HTTP work, so judge a formula by `avgUs`.
 
 An upload that fails leaves the previous formula running. An upload does not pause the strip: the new program is compiled into a spare buffer and switched in between two segment frames (see [How a frame is drawn](#how-a-frame-is-drawn)). If two uploads follow each other while a frame still uses the program the first one replaced, the second waits up to `LSF_SWAP_WAIT_MS` (500 ms) and otherwise fails with `busy: a frame is still being drawn, try again`.
@@ -57,9 +57,23 @@ The state JSON also reports the one-button control (see the README), under `lsf.
 
 ## Persistence
 
-An install sets WLED's `configNeedsWrite`, and WLED writes the source into `cfg.json` under `um.ls_formula` shortly afterwards. At boot the usermod recompiles each stored source, so bytecode is never stored: a future change to the language or limits cannot leave stale bytecode on flash. A stored formula that no longer compiles stays visible (with `err`) but inactive.
+An install sets WLED's `configNeedsWrite`, and WLED writes the source into `cfg.json` under `um.ls_formula` shortly afterwards, as `"s0": {"name": "...", "formula": "..."}`. At boot the usermod recompiles each stored source, so bytecode is never stored: a future change to the language or limits cannot leave stale bytecode on flash. A stored formula that no longer compiles stays visible (with `err`) but inactive.
 
-Four 1 KB sources add about 4 KB to `cfg.json`. The segment's current effect is **not** saved by this usermod; save a WLED preset for that.
+`formula` is the source in a **stored form** that survives WLED's usermod settings page, which shows every string as a one-line text field (a text field drops newlines, and a raw `"` would end the field's HTML attribute). Escapes start with a backslash, which never appears in LSF code:
+
+| In the source | Stored as |
+|---|---|
+| newline | `\n` |
+| carriage return | `\r` |
+| `"` | `\q` |
+| `\` | `\\` |
+| `&` followed by a letter, digit or `#` | `\a` (any other `&`, as in `a && b`, stays) |
+
+Everything else is kept as it is, and an unknown escape is read as written, so a formula typed into the field without escapes arrives as typed (on one line: use `;` or `\n` between statements). A config from an older version, with the raw source under `src`, is still read and is rewritten in the new form.
+
+**Settings page.** *Settings > Usermods > ls_formula* shows each slot's `name` and `formula`. Saving the page (for example to change the button pin) recompiles a slot **only if its source changed**, so it does not restart a formula or re-enable one the slow-frame guard switched off. A changed source that does not compile, or is over budget, is not installed: the slot keeps its formula, the old source is what gets saved, and `lsf.last` has the error. Posting `um.ls_formula` to `/json/cfg` behaves the same way. Editing formulas there is possible but awkward; `tools/lsfx.py` is the intended way.
+
+Four 1 KB sources add about 4 KB to `cfg.json` (at most 8 KB for sources full of escapes). The segment's current effect is **not** saved by this usermod; save a WLED preset for that.
 
 ## How a frame is drawn
 

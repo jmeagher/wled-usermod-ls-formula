@@ -6,10 +6,13 @@
 //   LsfFrameGuard    a time budget for all formula segments of one strip frame, and the per-slot status that the
 //                    state JSON reports, latched once per frame so it does not change from segment to segment.
 //   lsfSlowFrame()   the per-segment slow-frame counter that switches a formula off.
+//   lsfStoreEncode() / lsfStoreDecode()  the form a source is saved in cfg.json, which survives a round trip
+//                    through WLED's usermod settings page (an <input type=text> drops newlines).
 #pragma once
 #include <atomic>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "lsf.h"
 
 // The render task and the web task share the std::atomic members below. On the ESP32-C6 (RISC-V with the A
@@ -253,3 +256,63 @@ class LsfFrameGuard {
   std::atomic<uint32_t> pubMs_{0}, pubEst_{0}, pubReal_{0}, pubSegs_{0}, pubSkipped_{0};
   PubSlot               pubSlot_[SLOTS];
 };
+
+// ------------------------------------------------------------------------------- stored source form ------
+
+// cfg.json keeps each source as a "formula" string that WLED's usermod settings page shows in an
+// <input type="text" value="..."> (built as HTML text). Such a field drops newlines, and a raw '"' or '&' would end or
+// change the attribute. So the stored form escapes, with a backslash (which is never valid in LSF code):
+//   newline -> \n   carriage return -> \r   " -> \q   \ -> \\   & -> \a when a letter, digit or '#' follows it
+// (only then could the browser read it as a character reference; `&&` and `a & b` stay as they are).
+// Everything else, including '<', '>' and tabs, is kept: inside a double-quoted attribute they are harmless.
+// At most two bytes per source byte.
+
+// Writes the stored form of src[0..len) to out (NUL-terminated) if it fits in `cap` bytes. Returns the length of the
+// stored form without the NUL, whether or not it fit.
+inline size_t lsfStoreEncode(const char* src, size_t len, char* out, size_t cap) {
+  size_t o = 0;
+  auto put = [&](char c) { if (o + 1 < cap) out[o] = c; o++; };
+  for (size_t k = 0; k < len; k++) {
+    const char c = src[k];
+    const char nx = k + 1 < len ? src[k + 1] : 0;
+    switch (c) {
+      case '\n': put('\\'); put('n'); break;
+      case '\r': put('\\'); put('r'); break;
+      case '"':  put('\\'); put('q'); break;
+      case '\\': put('\\'); put('\\'); break;
+      case '&':
+        if ((nx >= 'a' && nx <= 'z') || (nx >= 'A' && nx <= 'Z') || (nx >= '0' && nx <= '9') || nx == '#') { put('\\'); put('a'); }
+        else put('&');
+        break;
+      default: put(c); break;
+    }
+  }
+  if (cap > 0) out[o + 1 <= cap ? o : cap - 1] = 0;
+  return o;
+}
+
+// Decodes a stored form into out (NUL-terminated). An unknown escape or a trailing backslash is kept as written, so a
+// formula typed into the settings page without escapes still arrives as typed (apart from the newlines the page
+// drops). Returns false, with out undefined, if the result needs more than `cap` bytes including the NUL.
+inline bool lsfStoreDecode(const char* in, char* out, size_t cap, size_t* outLen = nullptr) {
+  size_t o = 0;
+  for (size_t k = 0; in[k]; k++) {
+    char c = in[k];
+    if (c == '\\' && in[k + 1]) {
+      switch (in[k + 1]) {
+        case 'n':  c = '\n'; k++; break;
+        case 'r':  c = '\r'; k++; break;
+        case 'q':  c = '"';  k++; break;
+        case 'a':  c = '&';  k++; break;
+        case '\\': c = '\\'; k++; break;
+        default: break;   // keep the backslash; the next character follows as itself
+      }
+    }
+    if (o + 1 >= cap) return false;
+    out[o++] = c;
+  }
+  if (cap == 0) return false;
+  out[o] = 0;
+  if (outLen) *outLen = o;
+  return true;
+}
