@@ -69,14 +69,24 @@ static uint32_t blendColor(uint32_t a, uint32_t b, int32_t f) {
 
 // ------------------------------------------------------------ tables ------
 
+// Cost weights, in units of one simple operator (see lsf_estimate_us). They lean high on purpose:
+//  - every call costs at least 2: the call itself (the dispatch on the function id and the argument handling) costs
+//    about as much as a simple operator before the function does any work, so a formula made of nothing but the
+//    cheapest functions (red(), sel(), abs() ...) would otherwise be under-estimated;
+//  - prev() and prev2() call back into the host's frame buffer. At their old weights (3 and 4) fire.lsf was the one
+//    calibration formula whose estimate fell below the measured frame time (0.99x), so they carry a margin now.
+// The weights were calibrated against whole formulas on the device, not per function (tests/test_lsf.cpp keeps every
+// calibration point at 1.0x..1.5x of the measured worst frame). A formula made of one function whose weight is
+// low relative to its real cost can still run somewhat slower than estimated; the per-segment slow-frame guard and
+// the per-frame time budget in ls_formula.cpp are the backstop for that.
 struct FnInfo { const char* name; uint8_t arity; uint8_t cost; };
 static const FnInfo kFn[FN__COUNT] = {
   {"sin", 1, 2},  {"tri", 1, 2},   {"noise", 2, 8}, {"hash", 1, 4},
-  {"scale", 3, 3}, {"min", 2, 1},  {"max", 2, 1},    {"abs", 1, 1},
-  {"clamp", 3, 2}, {"mix", 3, 3},  {"sel", 3, 1},    {"hsv", 3, 8},
-  {"rgb", 3, 3},   {"pal", 1, 6},  {"red", 1, 1},    {"green", 1, 1},
-  {"blue", 1, 1},   {"dim", 2, 6},  {"blend", 3, 10}, {"prev", 1, 3},
-  {"prev2", 2, 4},
+  {"scale", 3, 3}, {"min", 2, 2},  {"max", 2, 2},    {"abs", 1, 2},
+  {"clamp", 3, 2}, {"mix", 3, 3},  {"sel", 3, 2},    {"hsv", 3, 8},
+  {"rgb", 3, 3},   {"pal", 1, 6},  {"red", 1, 2},    {"green", 1, 2},
+  {"blue", 1, 2},   {"dim", 2, 6},  {"blend", 3, 10}, {"prev", 1, 5},
+  {"prev2", 2, 6},
 };
 
 int lsf_fn_arity(uint8_t fn) { return fn < FN__COUNT ? kFn[fn].arity : -1; }
@@ -148,23 +158,33 @@ const char* lsf_verify(const LsfProgram& p) {
 
 // ----------------------------------------------------------- run ----------
 
+// The evaluation stack is indexed through a power-of-two mask. A verified program never needs it (its depth stays in
+// 0..LSF_MAX_STACK), but it means that even a corrupted program cannot make the interpreter write outside `st`.
+// It costs one AND per stack access.
+static constexpr unsigned pow2AtLeast(unsigned v, unsigned p = 1) { return p >= v ? p : pow2AtLeast(v, p * 2); }
+static constexpr unsigned kStackMask = pow2AtLeast(LSF_MAX_STACK + 1) - 1;
+
 uint32_t lsf_run(const LsfProgram& p, const LsfCtx& c) {
-  int32_t st[LSF_MAX_STACK + 1];
+  int32_t st[kStackMask + 3];   // +2: a call reads up to three arguments starting at a masked index
   int32_t loc[LSF_MAX_LOCALS];
-  int sp = 0;
-  for (unsigned k = 0; k < p.n; k++) {
+  unsigned sp = 0;
+  const unsigned n = p.n <= LSF_MAX_INSNS ? p.n : LSF_MAX_INSNS;
+  st[0] = 0;
+  for (unsigned k = 0; k < n; k++) {
     const LsfInsn& in = p.code[k];
+#define PUSH(v) do { st[sp & kStackMask] = (v); sp++; } while (0)
+#define TOP st[(sp - 1u) & kStackMask]
     switch (in.op) {
-      case OP_CONST: st[sp++] = in.imm; break;
-      case OP_IN:    st[sp++] = c.in[in.imm]; break;
-      case OP_LOAD:  st[sp++] = loc[in.imm]; break;
-      case OP_STORE: loc[in.imm] = st[--sp]; break;
-      case OP_NEG:   st[sp - 1] = (int32_t)(0u - (uint32_t)st[sp - 1]); break;
-      case OP_LNOT:  st[sp - 1] = st[sp - 1] == 0; break;
-      case OP_BNOT:  st[sp - 1] = ~st[sp - 1]; break;
+      case OP_CONST: PUSH(in.imm); break;
+      case OP_IN:    PUSH(c.in[in.imm]); break;
+      case OP_LOAD:  PUSH(loc[in.imm]); break;
+      case OP_STORE: sp--; loc[in.imm] = st[sp & kStackMask]; break;
+      case OP_NEG:   TOP = (int32_t)(0u - (uint32_t)TOP); break;
+      case OP_LNOT:  TOP = TOP == 0; break;
+      case OP_BNOT:  TOP = ~TOP; break;
       case OP_CALL: {
-        int ar = kFn[in.imm].arity;
-        int32_t* a = &st[sp - ar];
+        const unsigned ar = kFn[in.imm].arity;
+        const int32_t* a = &st[(sp - ar) & kStackMask];
         int32_t r = 0;
         switch (in.imm) {
           case FN_SIN:   r = kSin8[(uint32_t)a[0] & 255u]; break;
@@ -191,10 +211,11 @@ uint32_t lsf_run(const LsfProgram& p, const LsfCtx& c) {
                                                           (int32_t)((uint32_t)c.in[LSF_IN_CY] + (uint32_t)a[1])) & 0xFFFFFFu) : 0; break;
         }
         sp -= ar;
-        st[sp++] = r;
+        PUSH(r);
       } break;
       default: {  // binary operators
-        int32_t b = st[--sp], a = st[sp - 1], r = 0;
+        sp--;
+        int32_t b = st[sp & kStackMask], a = TOP, r = 0;
         uint32_t ua = (uint32_t)a, ub = (uint32_t)b;
         switch (in.op) {
           case OP_ADD: r = (int32_t)(ua + ub); break;
@@ -216,9 +237,11 @@ uint32_t lsf_run(const LsfProgram& p, const LsfCtx& c) {
           case OP_LAND: r = (a != 0) && (b != 0); break;
           case OP_LOR:  r = (a != 0) || (b != 0); break;
         }
-        st[sp - 1] = r;
+        TOP = r;
       } break;
     }
+#undef PUSH
+#undef TOP
   }
   return (uint32_t)st[0] & 0xFFFFFFu;
 }
@@ -234,7 +257,8 @@ struct Compiler {
   LsfError* E;
   int depth;     // current stack depth while emitting
   int maxDepth;
-  int nest;      // parser recursion depth
+  int nest;      // parser recursion depth (see LSF_MAX_NEST)
+  bool minLiteral;  // the next decimal literal directly follows a unary '-': 2147483648 is allowed
   int parens;    // open '(' count: newlines are plain whitespace inside parentheses
   unsigned cost;
   char names[LSF_MAX_LOCALS][LSF_MAX_NAME + 1];
@@ -325,7 +349,7 @@ struct Compiler {
 
   void parseExpr(int minPrec) {
     if (failed) return;
-    if (++nest > 24) { fail("expression too deep", p); nest--; return; }
+    if (++nest > LSF_MAX_NEST) { fail("expression too deep", p); nest--; return; }
     parseUnary();
     for (;;) {
       if (failed) break;
@@ -344,7 +368,8 @@ struct Compiler {
     char c = s[p];
     if (c == '-' || c == '!' || c == '~') {
       p++;
-      if (++nest > 24) { fail("expression too deep", p); nest--; return; }
+      if (++nest > LSF_MAX_NEST) { fail("expression too deep", p); nest--; return; }
+      minLiteral = c == '-';   // `-2147483648`: the literal alone does not fit, but NEG of it wraps to INT32_MIN
       parseUnary();
       nest--;
       emit(c == '-' ? OP_NEG : (c == '!' ? OP_LNOT : OP_BNOT), 0);
@@ -354,6 +379,8 @@ struct Compiler {
   }
 
   void parsePrimary() {
+    const bool allowMin = minLiteral;
+    minLiteral = false;
     skipSpace(false);
     if (p >= n) { fail("expression expected", p); return; }
     char c = s[p];
@@ -367,13 +394,14 @@ struct Compiler {
       parens--;
       return;
     }
-    if (isDigit(c)) { parseNumber(); return; }
+    if (isDigit(c)) { parseNumber(allowMin); return; }
     if (isIdStart(c)) { parseName(); return; }
     if (c == '\n' || c == ';') { fail("expression expected", p); return; }
     fail("unexpected character", p);
   }
 
-  void parseNumber() {
+  // allowMin: the literal is the operand of a unary '-', so 2147483648 (which becomes INT32_MIN) is accepted.
+  void parseNumber(bool allowMin) {
     size_t start = p;
     uint64_t v = 0;
     if (s[p] == '0' && p + 1 < n && (s[p + 1] == 'x' || s[p + 1] == 'X')) {
@@ -390,9 +418,10 @@ struct Compiler {
       }
       if (digits == 0) { fail("hex digits expected", start); return; }
     } else {
+      const uint64_t limit = allowMin ? 0x80000000ull : 0x7FFFFFFFull;
       while (p < n && isDigit(s[p])) {
         v = v * 10 + (uint64_t)(s[p] - '0'); p++;
-        if (v > 0x7FFFFFFFull) { fail("number too large", start); return; }
+        if (v > limit) { fail("number too large", start); return; }
       }
     }
     if (p < n && (s[p] == '.' || isIdStart(s[p]))) { fail("integers only", p); return; }
@@ -439,6 +468,13 @@ struct Compiler {
     fail("unknown name", start);
   }
 
+  // A statement must be followed by a newline, a ';' or the end of the source.
+  bool statementEnds() {
+    skipSpace(false);
+    if (p < n && s[p] != '\n' && s[p] != ';') { fail("unexpected text after expression", p); return false; }
+    return true;
+  }
+
   void parseProgram() {
     bool haveFinal = false;
     for (;;) {
@@ -464,6 +500,7 @@ struct Compiler {
         p++;
         parseExpr(1);
         if (failed) return;
+        if (!statementEnds()) return;
         // The name becomes visible only after its own definition (no self reference).
         unsigned idx = P->nlocals++;
         memcpy(names[idx], s + ns, l); names[idx][l] = 0;
@@ -472,8 +509,7 @@ struct Compiler {
         parseExpr(1);
         if (failed) return;
         haveFinal = true;
-        skipSpace(false);
-        if (p < n && s[p] != '\n' && s[p] != ';') { fail("unexpected text after expression", p); return; }
+        if (!statementEnds()) return;
       }
     }
     if (!haveFinal) fail("missing final expression", n);
@@ -490,7 +526,7 @@ bool lsf_compile(const char* src, size_t len, LsfProgram* out, LsfError* err) {
   memset(out, 0, sizeof(*out));
   Compiler c;
   c.s = src; c.n = len; c.p = 0; c.P = out; c.E = err;
-  c.depth = 0; c.maxDepth = 0; c.nest = 0; c.parens = 0; c.cost = 0; c.failed = false;
+  c.depth = 0; c.maxDepth = 0; c.nest = 0; c.minLiteral = false; c.parens = 0; c.cost = 0; c.failed = false;
   memset(c.names, 0, sizeof(c.names));
   if (len > LSF_MAX_SRC) { c.fail("source too long", 0); return false; }
   for (size_t k = 0; k < len; k++)

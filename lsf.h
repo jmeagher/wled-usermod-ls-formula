@@ -21,6 +21,13 @@
 #define LSF_MAX_STACK 16    // evaluation stack depth
 #endif
 #define LSF_MAX_NAME    12    // characters in a `let` name
+// Parser recursion limit: one level per '(' or call argument and per unary operator. The compiler runs on the web
+// server's task stack (8 KB on ESP32): measured with -fstack-usage, one level of parentheses costs about 128 bytes on
+// the ESP32-C6 (RISC-V) and about 96 bytes on the ESP32 (Xtensa), so 16 levels stay near 2 KB. Values deeper than
+// LSF_MAX_STACK cannot be built anyway.
+#ifndef LSF_MAX_NEST
+#define LSF_MAX_NEST    16
+#endif
 
 // Read-only inputs, in the order of the `in` array of LsfCtx.
 enum LsfInput {
@@ -106,8 +113,8 @@ uint32_t lsf_run(const LsfProgram& p, const LsfCtx& ctx);
 // Admission control. A formula's run time is cost x pixels, and that, not the
 // instruction count, is what decides whether a strip can keep up. The estimate
 // is per-pixel microseconds = cost * 0.3 + 1, calibrated on an ESP32-C6 at
-// 160 MHz against eight real formulas (it came out 0.99x to 1.35x the measured
-// worst frame; tests/test_lsf.cpp keeps it honest). Override LSF_US_PER_COST_X10 for a faster or slower chip.
+// 160 MHz against eight real formulas (it comes out 1.09x to 1.38x the measured
+// worst frame; tests/test_lsf.cpp fails outside 1.0x..1.5x). Override LSF_US_PER_COST_X10 for a faster or slower chip.
 #ifndef LSF_US_PER_COST_X10
 #define LSF_US_PER_COST_X10 3
 #endif
