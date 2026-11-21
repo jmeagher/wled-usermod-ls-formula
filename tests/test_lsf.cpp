@@ -1,9 +1,12 @@
 // Host tests for the LS Formula compiler, verifier and interpreter.
 // Build and run: wled/tests/run.sh
 #include "../lsf.h"
+#include "../lsf_runtime.h"
 #include <stdio.h>
 #include <string.h>
 #include <string>
+#include <vector>
+#include <ctype.h>
 
 static int g_fail = 0, g_run = 0;
 #define CHECK(cond) do { g_run++; if (!(cond)) { g_fail++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -324,7 +327,7 @@ static void testEstimate() {
   CHECK(lsf_estimate_us(q, 0xFFFFFFFFu) == 0xFFFFFFFFu);
   CHECK(lsf_max_pixels(q, 0xFFFFFFFFu) > 0);
   CHECK(lsf_max_pixels(q, 0) == 0);
-  // The calibration points measured on the ESP32-C6 (50 LEDs, worst frame in us) stay within 0.9x..1.5x.
+  // The calibration points measured on the ESP32-C6 (50 LEDs, worst frame in us) stay within 1.0x..1.5x.
   struct { const char* file; unsigned measuredUs; } cal[] = {
     {"rainbow_wave", 461}, {"plasma", 674}, {"comet_trail", 668}, {"twinkle", 737}, {"ripple2d", 731}, {"fire", 1774}, {"falling_leaves", 2524}, {"bench_heavy_noise", 5913}};
   for (unsigned k = 0; k < sizeof(cal) / sizeof(cal[0]); k++) {
@@ -335,9 +338,276 @@ static void testEstimate() {
     LsfProgram e;
     if (!lsf_compile(buf, n, &e, nullptr)) { g_fail++; continue; }
     double ratio = (double)lsf_estimate_us(e, 50) / cal[k].measuredUs;
-    if (ratio < 0.9 || ratio > 1.5) printf("calibration drift for %s: ratio %.2f\n", cal[k].file, ratio);
-    CHECK(ratio >= 0.9 && ratio <= 1.5);
+    // Never below the measurement: an under-estimate is what lets a formula past admission control and stall WiFi.
+    if (ratio < 1.0 || ratio > 1.5) printf("calibration drift for %s: ratio %.2f\n", cal[k].file, ratio);
+    CHECK(ratio >= 1.0 && ratio <= 1.5);
   }
+}
+
+// Regression: a `let` must end at a newline, ';' or the end of the source, like every other statement.
+static void testLetTerminator() {
+  CHECK(fails("let a = 1 a", "unexpected text after expression"));
+  CHECK(fails("let a = 1 hsv(x, 255, 255)", "unexpected text after expression"));
+  CHECK(fails("let a = 1\nlet b = 2 b", "unexpected text after expression", 2));
+  CHECK(evalExpr("let a = 1; a") == 1);
+  CHECK(evalExpr("let a = 1 # comment\na") == 1);
+  CHECK(evalExpr("let a = (1 +\n 2)\na") == 3);
+  CHECK(evalExpr("let a = 4;let b = 5;a*b") == 20);
+}
+
+// Regression: the smallest 32-bit value can be written in decimal.
+static void testMinLiteral() {
+  CHECK(evalExpr("-2147483648 == 0x80000000") == 1);
+  CHECK(evalExpr("- 2147483648 == 0x80000000") == 1);
+  CHECK(evalExpr("-2147483648 < 0") == 1);
+  CHECK(evalExpr("-2147483648 + 1 == -2147483647") == 1);
+  CHECK(evalExpr("(-2147483648 >> 31) & 1") == 1);           // sign bit set: it really is INT32_MIN
+  CHECK(evalExpr("--2147483648 == -2147483648") == 1);         // negating INT32_MIN wraps, as documented
+  CHECK(fails("2147483648", "too large"));                      // without the minus it does not fit
+  CHECK(fails("-2147483649", "too large"));
+  CHECK(fails("1 - 2147483648", "too large"));                 // binary minus: the literal stands alone
+  CHECK(fails("-(2147483648)", "too large"));
+  CHECK(fails("-!2147483648", "too large"));
+  CHECK(fails("let a = -2147483648\n2147483648", "too large", 2));
+}
+
+// Regression: parser recursion is capped at LSF_MAX_NEST (the compiler runs on the web server's task stack).
+static void testNestLimit() {
+  std::string ok, over;
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) ok += "(";
+  ok += "1";
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) ok += ")";
+  LsfProgram p;
+  CHECK(compile(ok.c_str(), &p));
+  over = "(" + ok + ")";
+  CHECK(fails(over.c_str(), "too deep"));
+  std::string neg(LSF_MAX_NEST - 1, '-'); neg += "1";
+  CHECK(compile(neg.c_str(), &p));
+  CHECK(fails(("--" + neg).c_str(), "too deep"));
+  std::string call;                                              // sin(sin(...)): one level per call
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) call += "sin(";
+  call += "x";
+  for (int k = 0; k < LSF_MAX_NEST - 1; k++) call += ")";
+  CHECK(compile(call.c_str(), &p));
+  CHECK(fails(("sin(" + call + ")").c_str(), "too deep"));
+}
+
+// Defense in depth: a program that skipped the verifier (or was corrupted in memory) must not make the interpreter
+// touch memory outside its own stack. Run under ASan by tests/run.sh.
+static void testUnverifiedRun() {
+  LsfProgram p; memset(&p, 0, sizeof(p));
+  LsfCtx c = baseCtx();
+  p.n = LSF_MAX_INSNS;                                           // push far past LSF_MAX_STACK
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_CONST; p.code[k].imm = (int32_t)k; }
+  (void)lsf_run(p, c);
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_ADD; }   // pop far below zero
+  (void)lsf_run(p, c);
+  for (unsigned k = 0; k < p.n; k++) { p.code[k].op = OP_CALL; p.code[k].imm = FN_BLEND; }   // 3-argument calls on an empty stack
+  (void)lsf_run(p, c);
+  p.n = 0xFFFF;                                                  // instruction count beyond the code array
+  (void)lsf_run(p, c);
+  CHECK(true);
+}
+
+static void testCallWeights() {
+  // Every call costs at least 2 (the call itself costs about one simple operator), on top of its arguments.
+  LsfProgram p;
+  for (int f = 0; f < FN__COUNT; f++) {
+    static const char* names[] = {"sin", "tri", "noise", "hash", "scale", "min", "max", "abs", "clamp", "mix", "sel", "hsv",
+                                  "rgb", "pal", "red", "green", "blue", "dim", "blend", "prev", "prev2"};
+    std::string src = std::string(names[f]) + "(";
+    for (int a = 0; a < lsf_fn_arity((uint8_t)f); a++) src += a ? ",x" : "x";
+    src += ")";
+    CHECK(compile(src.c_str(), &p));
+    CHECK(p.cost >= (unsigned)lsf_fn_arity((uint8_t)f) + 2);
+  }
+}
+
+// ------------------------------------------------------------------------------- run-time support -------
+
+static void fillProg(LsfProgram& p, int32_t v) { compile("1", &p); p.code[0].imm = v; }
+
+// Finding: an install used to memcpy over the program the render task might still be running. The store must never
+// hand the writer a buffer that a reader entered before the swap may still hold.
+static void testProgramStore() {
+  LsfProgramStore<2> st;                     // 2 slots + 1 spare
+  LsfRun* a = st.acquire(); CHECK(a != nullptr); fillProg(a->prog, 1); a->resetStatus(1); st.publish(0, a);
+  LsfRun* b = st.acquire(); CHECK(b != nullptr && b != a); fillProg(b->prog, 2); b->resetStatus(2); st.publish(1, b);
+  CHECK(st.installed(0) == a && st.installed(1) == b);
+  {
+    LsfProgramStore<2>::Reader r(st);
+    CHECK((st.seq() & 1u) == 1);
+    const LsfRun* seen = r.get(0);
+    CHECK(seen == a);
+    LsfRun* c = st.acquire(); CHECK(c != nullptr && c != a && c != b);   // the spare
+    fillProg(c->prog, 3); c->resetStatus(3);
+    st.publish(0, c);                        // a is retired while the reader may still use it
+    CHECK(st.installed(0) == c);
+    CHECK(st.acquire() == nullptr);          // a is the only free buffer and the reader is still inside
+    CHECK(seen->prog.code[0].imm == 1);      // untouched
+    LsfCtx ctx = baseCtx();
+    CHECK(lsf_run(seen->prog, ctx) == 1);
+  }
+  CHECK((st.seq() & 1u) == 0);
+  LsfRun* d = st.acquire(); CHECK(d == a);  // released once the reader has left
+  {
+    LsfProgramStore<2>::Reader r(st);
+    CHECK(r.get(0) == st.installed(0));      // a reader that starts after a swap sees the new program
+  }
+  // A buffer retired while no reader was inside can be reused at once.
+  fillProg(d->prog, 4); d->resetStatus(4); st.publish(1, d);     // retires b with an even sequence number
+  LsfRun* e = st.acquire(); CHECK(e == b);
+  // Clearing a slot frees its buffer the same way.
+  {
+    LsfProgramStore<2>::Reader r(st);
+    (void)r.get(0);
+    st.publish(0, nullptr);
+    CHECK(st.installed(0) == nullptr);
+    LsfRun* f = st.acquire(); CHECK(f == b);   // b is free; c (just cleared) is still held by the reader
+    st.publish(0, f);
+    CHECK(st.acquire() == nullptr);
+  }
+  CHECK(st.acquire() != nullptr);
+  // Status is per program: a new program starts clean.
+  LsfRun* g = st.acquire();
+  g->disabled.store(true); g->worstUs.store(99); snprintf(g->err, sizeof(g->err), "x");
+  g->resetStatus(7);
+  CHECK(!g->disabled.load() && g->worstUs.load() == 0 && g->err[0] == 0 && g->gen == 7);
+}
+
+// Finding: the slow-frame counter was per slot, so one fast segment between slow ones reset it and the guard never fired.
+static void testSlowFrame() {
+  const uint32_t limit = 60000;
+  uint16_t bigCount = 0, bigGen = 0, smallCount = 0, smallGen = 0;
+  bool off = false;
+  int frames = 0;
+  for (; frames < 10 && !off; frames++) {    // segment order within a frame: big, small
+    off = lsfSlowFrame(bigCount, bigGen, 1, 70000, limit);
+    if (!off) CHECK(!lsfSlowFrame(smallCount, smallGen, 1, 500, limit));
+  }
+  CHECK(off);
+  CHECK(frames == 3);
+  // A fast frame on the same segment resets it.
+  uint16_t c = 0, g = 0;
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(!lsfSlowFrame(c, g, 1, 100, limit));
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(lsfSlowFrame(c, g, 1, 70000, limit));
+  // A newly installed program (another generation) starts from zero on the same segment.
+  c = 0; g = 0;
+  CHECK(!lsfSlowFrame(c, g, 1, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 1, 70000, limit));
+  CHECK(!lsfSlowFrame(c, g, 2, 70000, limit)); CHECK(!lsfSlowFrame(c, g, 2, 70000, limit));
+  CHECK(lsfSlowFrame(c, g, 2, 70000, limit));
+}
+
+// Finding: the budget was per segment only, so many segments just under it added up without limit; and the per-slot
+// status was overwritten by whichever segment was drawn last.
+static void testFrameGuard() {
+  typedef LsfFrameGuard<2> G;
+  G g(15000, 30000, 60000);
+  G::FrameStatus fr; G::SlotStatus ss[2];
+  CHECK(!g.report(0, 2000, &fr, ss));         // nothing drawn yet
+  // 32 segments of 14 ms each in one frame: only two fit the 30 ms frame budget.
+  for (uint32_t frame = 1; frame <= 3; frame++) {
+    int drawn = 0, skipped = 0;
+    for (int k = 0; k < 32; k++) {
+      G::Verdict v = g.admit(0, frame * 25, frame * 25, 14000, 100);
+      if (v == G::DRAW) { drawn++; g.charge(13000); } else if (v == G::SKIP) skipped++;
+    }
+    CHECK(drawn == 2 && skipped == 30);
+  }
+  CHECK(g.report(75, 2000, &fr, ss));         // the last complete frame (frame 2; frame 3 is still open)
+  CHECK(fr.segs == 2 && fr.skipped == 30 && fr.estUs == 28000 && fr.realUs == 26000);
+  CHECK(ss[0].segs == 2 && ss[0].skipped == 30 && ss[0].over == 0);
+  CHECK(ss[1].segs == 0);
+  CHECK(!g.report(75 + 2001 + 25, 2000, &fr, ss));   // stale: the effect is no longer drawn
+  CHECK(fr.segs == 0 && ss[0].segs == 0);
+
+  // The real time spent stops the frame even when the estimates are small (an estimate that is too low).
+  G h(15000, 30000, 60000);
+  CHECK(h.admit(1, 10, 10, 1000, 10) == G::DRAW); h.charge(61000);
+  CHECK(h.admit(1, 10, 10, 1000, 10) == G::SKIP);
+  CHECK(h.admit(0, 10, 10, 1000, 10) == G::SKIP);
+  CHECK(h.admit(1, 11, 11, 1000, 10) == G::DRAW);   // a new frame starts over
+
+  // One slot on a big and a small segment: the status is the same whatever the order, frame after frame.
+  G m(15000, 30000, 60000);
+  for (uint32_t frame = 1; frame <= 6; frame++) {
+    const bool bigFirst = frame & 1;
+    for (int k = 0; k < 2; k++) {
+      const bool big = (k == 0) == bigFirst;
+      G::Verdict v = m.admit(0, frame, frame, big ? 40000 : 100, big ? 3000 : 8);
+      CHECK(v == (big ? G::OVER_BUDGET : G::DRAW));
+    }
+    if (frame >= 2) {
+      CHECK(m.report(frame, 2000, &fr, ss));
+      CHECK(ss[0].segs == 1 && ss[0].over == 1 && ss[0].overEstUs == 40000 && ss[0].overPixels == 3000);
+    }
+  }
+  // Admission order: an over-budget segment uses none of the frame budget.
+  G q(15000, 30000, 60000);
+  CHECK(q.admit(0, 1, 1, 20000, 1) == G::OVER_BUDGET);
+  CHECK(q.admit(0, 1, 1, 15000, 1) == G::DRAW);
+  CHECK(q.admit(0, 1, 1, 15000, 1) == G::DRAW);
+  CHECK(q.admit(0, 1, 1, 1, 1) == G::SKIP);
+  CHECK(q.admit(5, 2, 2, 1, 1) == G::SKIP);   // bad slot id
+}
+
+// Finding: the settings page shows each source in an <input type=text>, which drops newlines (and a raw '"' would end
+// the attribute), so saving the page broke multi-line formulas. The stored form survives that round trip.
+static std::string browserRoundTrip(const std::string& v) {   // what an <input type=text value="..."> posts back
+  std::string out;
+  for (char c : v) if (c != '\n' && c != '\r') out += c;
+  return out;
+}
+static void checkStoredForm(const std::string& src) {
+  std::vector<char> enc(2 * src.size() + 1), dec(src.size() + 1);
+  const size_t n = lsfStoreEncode(src.data(), src.size(), enc.data(), enc.size());
+  CHECK(n <= 2 * src.size());
+  CHECK(n == strlen(enc.data()));
+  const std::string e(enc.data(), n);
+  CHECK(e.find('\n') == std::string::npos && e.find('\r') == std::string::npos && e.find('"') == std::string::npos);
+  for (size_t k = 0; k + 1 < e.size(); k++)   // no '&' that HTML could read as a character reference
+    if (e[k] == '&') CHECK(!isalnum((unsigned char)e[k + 1]) && e[k + 1] != '#');
+  const std::string back = browserRoundTrip(e);
+  size_t len = 0;
+  CHECK(lsfStoreDecode(back.c_str(), dec.data(), dec.size(), &len));
+  CHECK(len == src.size() && memcmp(dec.data(), src.data(), len) == 0);
+}
+static void testStoredForm() {
+  checkStoredForm("");
+  checkStoredForm("let a = x\nhsv(a, 255, 255)");
+  checkStoredForm("# \"quoted\" & &amp; &#38; \\n \\\\ back\\\r\nx && 1 & 2 | t&mask");
+  checkStoredForm("&");
+  checkStoredForm("\\");
+  checkStoredForm("x % 7 < 3 > 1");
+  static const char* files[] = {"plasma", "rainbow_wave", "fire", "comet_trail", "twinkle", "ripple2d", "falling_leaves", "bench_heavy_noise",
+                                "palette_fill", "palette_twinkle", "end_flames", "palette_drops", "bar_sparkles"};
+  for (unsigned k = 0; k < sizeof(files) / sizeof(files[0]); k++) {
+    std::string path = std::string(LSF_EXAMPLES_DIR) + "/" + files[k] + ".lsf";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) { g_fail++; continue; }
+    char buf[LSF_MAX_SRC + 2]; size_t n = fread(buf, 1, sizeof(buf), f); fclose(f);
+    checkStoredForm(std::string(buf, n));
+  }
+  for (int iter = 0; iter < 3000; iter++) {   // any bytes except NUL
+    std::string s;
+    const int len = (int)(rnd() % 64);
+    for (int k = 0; k < len; k++) { static const char pick[] = "\\\n\r\"&a#1 x;<>"; s += (rnd() & 1) ? pick[rnd() % 13] : (char)(1 + rnd() % 255); }
+    checkStoredForm(s);
+  }
+  // Worst case is two bytes per byte; a short buffer is reported and still NUL-terminated.
+  std::string worst(LSF_MAX_SRC, '"');
+  char small[8];
+  CHECK(lsfStoreEncode(worst.data(), worst.size(), small, sizeof(small)) == 2 * worst.size());
+  CHECK(strlen(small) < sizeof(small));
+  // Decoding: text typed into the settings page without escapes arrives as typed; too long is refused.
+  char out[32]; size_t len = 0;
+  CHECK(lsfStoreDecode("x % 7 \\z \\", out, sizeof(out), &len) && strcmp(out, "x % 7 \\z \\") == 0);
+  CHECK(lsfStoreDecode("a\\nb\\qc\\ad\\\\", out, sizeof(out)) && strcmp(out, "a\nb\"c&d\\") == 0);
+  CHECK(!lsfStoreDecode("0123456789", out, 10));
+  CHECK(lsfStoreDecode("012345678", out, 10));
+  CHECK(!lsfStoreDecode("", out, 0));
 }
 
 static void testExamplesCompile() {
@@ -358,6 +628,8 @@ static void testExamplesCompile() {
 int main() {
   testArithmetic(); testMultiline(); testBuiltins(); testNoise(); testInputsAndLocals(); testRejects();
   testLimits(); testVerifier(); testFuzz(); testCallbacks(); testCost(); testEstimate(); testExamplesCompile();
+  testLetTerminator(); testMinLiteral(); testNestLimit(); testUnverifiedRun(); testCallWeights();
+  testProgramStore(); testSlowFrame(); testFrameGuard(); testStoredForm();
   printf("%d checks, %d failures\n", g_run, g_fail);
   return g_fail ? 1 : 0;
 }

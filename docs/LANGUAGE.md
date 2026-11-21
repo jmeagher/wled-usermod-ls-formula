@@ -13,7 +13,7 @@ hsv(x + t / 8 + sp, 255, scale(wave, 90, 255))
 ```
 
 - A program is zero or more `let name = expression` statements followed by **exactly one final expression**. The final expression is the pixel colour, packed as `0xRRGGBB`.
-- Statements end at a newline or a `;`.
+- Every statement, `let` included, ends at a newline, a `;` or the end of the program. `let a = 1 a` is an error (`unexpected text after expression`); write `let a = 1; a`.
 - `#` starts a comment that runs to the end of the line.
 - **Newlines inside parentheses are whitespace**, so a long call can be wrapped:
 
@@ -35,6 +35,7 @@ All values are **32-bit signed integers**.
 - `>>` is an arithmetic (sign-extending) shift. Shift counts use their low 5 bits.
 - Comparisons and logical operators give `0` or `1`; any non-zero value is "true".
 - Numbers are decimal (`255`) or hex (`0xFF8800`). Floats and suffixes such as `1.5` or `12px` are rejected.
+- A decimal literal goes up to `2147483647`. The one exception is the smallest value, `-2147483648`, which is accepted when the minus sign is written directly in front of the number (`0x80000000` is the same value). `1 - 2147483648` is rejected, as in C.
 - A colour is just an integer, `0xRRGGBB`. Only the low 24 bits of the final result are used.
 
 ## Inputs
@@ -106,7 +107,8 @@ From lowest to highest precedence; all binary operators are left associative.
 | Source size | 1024 bytes | `LSF_MAX_SRC` (comments count) |
 | Instructions after compiling | 256 | `LSF_MAX_INSNS` (8 bytes of RAM each, per slot) |
 | `let` variables | 16 | `LSF_MAX_LOCALS` |
-| Expression depth | 16 | `LSF_MAX_STACK` |
+| Expression depth (values waiting on the stack) | 16 | `LSF_MAX_STACK` |
+| Nesting: parentheses, function calls and unary `-` `!` `~` inside each other | 15 levels | `LSF_MAX_NEST` (16, counting the statement itself) |
 | Variable name length | 12 | |
 
 Besides these, the **speed budget** applies: a formula is accepted only while its estimated frame time on your strip stays under 15 ms. See [API.md](API.md#speed-budget-admission-control).
@@ -117,7 +119,7 @@ The compiler reports a message and a line number. Messages you can get:
 
 | Message | Meaning |
 |---|---|
-| `source too long`, `program too long`, `expression too deep` | a limit above was exceeded |
+| `source too long`, `program too long`, `expression too deep` | a limit above was exceeded (`expression too deep` is the stack or the nesting limit) |
 | `too many variables`, `name too long` | more than 16 `let`s, or a name over 12 characters |
 | `name already in use` | a `let` reuses an input, a function or an earlier variable |
 | `unknown name`, `unknown function`, `wrong argument count` | the identifier or call is not valid |

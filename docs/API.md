@@ -31,21 +31,25 @@ The reply contains an `lsf` object:
   "lsf": {
     "slots": [
       {"slot": 3, "fx": 171, "name": "Falling Leaves", "ok": true,
-       "instrs": 161, "cost": 224, "prev": false,
-       "estUs": 3410, "maxPx": 219, "avgUs": 2400, "worstUs": 2582,
+       "instrs": 161, "cost": 229, "prev": false,
+       "estUs": 3485, "maxPx": 215, "avgUs": 2400, "worstUs": 2582,
+       "segs": 1, "skipped": 0, "overSegs": 0,
        "src": "..."}
     ],
-    "last":   {"slot": 3, "ok": true, "dry": false, "instrs": 161, "cost": 224, "estUs": 3410, "maxPx": 219},
-    "limits": {"src": 1024, "instrs": 256, "locals": 16, "slots": 4, "budgetUs": 15000, "pixels": 50}
+    "last":   {"slot": 3, "ok": true, "dry": false, "instrs": 161, "cost": 229, "estUs": 3485, "maxPx": 215},
+    "frame":  {"segs": 1, "estUs": 3485, "us": 2410, "skipped": 0},
+    "limits": {"src": 1024, "instrs": 256, "locals": 16, "slots": 4, "budgetUs": 15000, "frameBudgetUs": 30000, "pixels": 50}
   }
 }
 ```
 
-- `slots[].ok` is false when the slot is empty, was switched off, or is over budget; `err` then says why.
-- `last` is the result of the **most recent request**, including dry runs. On failure it has `err`, and for compile errors `line` and `pos`; `line` is `0` for errors that are not about the source, such as an over-budget rejection.
+- `slots[].ok` is false when the slot is empty, was switched off, is over budget on a segment, or was skipped because the frame budget ran out; `err` then says why.
+- `segs`, `overSegs` and `skipped` describe the **last complete strip frame**: how many segments drew this slot, how many were blanked because the formula is over budget for that segment, and how many were blanked because the frame budget was used up. They are present only while the effect is running (a formula segment was drawn in the last 2 s). Because they describe a whole frame, `ok` and `err` do not change depending on which of several segments was drawn last.
+- `frame` is the same frame as a whole: the segments drawn with any formula, their summed estimate, the real time they took and how many were skipped. All zero when no formula is running.
+- `last` is the result of the **most recent request or settings change**, including dry runs (not of the boot-time reload of `cfg.json`). On failure it has `err`, and for compile errors `line` and `pos`; `line` is `0` for errors that are not about the source, such as an over-budget rejection.
 - `estUs` is the estimated frame time for the whole strip, `maxPx` how many LEDs the formula fits in the budget, `avgUs` a moving average of the real frame time and `worstUs` the largest single frame since install. `worstUs` includes preemption by WiFi and HTTP work, so judge a formula by `avgUs`.
 
-An upload that fails leaves the previous formula running.
+An upload that fails leaves the previous formula running. An upload does not pause the strip: the new program is compiled into a spare buffer and switched in between two segment frames (see [How a frame is drawn](#how-a-frame-is-drawn)). If two uploads follow each other while a frame still uses the program the first one replaced, the second waits up to `LSF_SWAP_WAIT_MS` (500 ms) and otherwise fails with `busy: a frame is still being drawn, try again`.
 
 ## Button control
 
@@ -53,35 +57,54 @@ The state JSON also reports the one-button control (see the README), under `lsf.
 
 ## Persistence
 
-An install sets WLED's `configNeedsWrite`, and WLED writes the source into `cfg.json` under `um.ls_formula` shortly afterwards. At boot the usermod recompiles each stored source, so bytecode is never stored: a future change to the language or limits cannot leave stale bytecode on flash. A stored formula that no longer compiles stays visible (with `err`) but inactive.
+An install sets WLED's `configNeedsWrite`, and WLED writes the source into `cfg.json` under `um.ls_formula` shortly afterwards, as `"s0": {"name": "...", "formula": "..."}`. At boot the usermod recompiles each stored source, so bytecode is never stored: a future change to the language or limits cannot leave stale bytecode on flash. A stored formula that no longer compiles stays visible (with `err`) but inactive.
 
-Four 1 KB sources add about 4 KB to `cfg.json`. The segment's current effect is **not** saved by this usermod; save a WLED preset for that.
+`formula` is the source in a **stored form** that survives WLED's usermod settings page, which shows every string as a one-line text field (a text field drops newlines, and a raw `"` would end the field's HTML attribute). Escapes start with a backslash, which never appears in LSF code:
+
+| In the source | Stored as |
+|---|---|
+| newline | `\n` |
+| carriage return | `\r` |
+| `"` | `\q` |
+| `\` | `\\` |
+| `&` followed by a letter, digit or `#` | `\a` (any other `&`, as in `a && b`, stays) |
+
+Everything else is kept as it is, and an unknown escape is read as written, so a formula typed into the field without escapes arrives as typed (on one line: use `;` or `\n` between statements). A config from an older version, with the raw source under `src`, is still read and is rewritten in the new form.
+
+**Settings page.** *Settings > Usermods > ls_formula* shows each slot's `name` and `formula`. Saving the page (for example to change the button pin) recompiles a slot **only if its source changed**, so it does not restart a formula or re-enable one the slow-frame guard switched off. A changed source that does not compile, or is over budget, is not installed: the slot keeps its formula, the old source is what gets saved, and `lsf.last` has the error. Posting `um.ls_formula` to `/json/cfg` behaves the same way. Editing formulas there is possible but awkward; `tools/lsfx.py` is the intended way.
+
+Four 1 KB sources add about 4 KB to `cfg.json` (at most 8 KB for sources full of escapes). The segment's current effect is **not** saved by this usermod; save a WLED preset for that.
 
 ## How a frame is drawn
 
 For each frame WLED calls the slot's effect function with the current segment:
 
-1. If the slot is empty, disabled or over budget, the segment is filled black.
-2. The segment is 2D only when `strip.isMatrix` is true and the segment itself is 2D; a segment on a matrix's trailing strip runs as 1D.
-3. If the formula uses `prev`/`prev2`, two RGB frame buffers are allocated in the segment's effect data.
-4. For every pixel the inputs are filled in and the bytecode runs once. The colour is written with `setPixelColor` (1D) or `setPixelColorXY` (2D).
-5. The real frame time updates `avgUs`/`worstUs`.
+1. The slot's current program is picked up once; the segment is drawn entirely with it.
+2. If the slot is empty or its formula was switched off, the segment is filled black.
+3. The segment is 2D only when `strip.isMatrix` is true and the segment itself is 2D; a segment on a matrix's trailing strip runs as 1D.
+4. Admission (see below): if the formula is over budget for this segment, or the frame budget is used up, the segment is filled black.
+5. If the formula uses `prev`/`prev2`, two RGB frame buffers are allocated in the segment's effect data.
+6. For every pixel the inputs are filled in and the bytecode runs once. The colour is written with `setPixelColor` (1D) or `setPixelColorXY` (2D).
+7. The real time updates `avgUs`/`worstUs`, the frame's running total and the segment's slow-frame count.
 
-A new program is swapped in with the strip suspended (`strip.suspend()` then `waitForIt()`), so a frame is never drawn with half of the old program and half of the new one.
+**Replacing a program while frames are drawn.** WLED draws in its main loop while uploads arrive on the web server's task. Each slot's program is a pointer to one of `LSF_SLOTS + 1` program buffers (the slots' programs plus one spare). An upload compiles into a buffer no slot uses and no frame can be reading, then switches the slot's pointer in one atomic step; the buffer it replaced is reused only after the segment frame that may still be reading it has finished. So a frame is never drawn with half of an old program and half of a new one, and the strip is not paused for an upload. The interpreter also masks its stack index, so even a damaged program could not write outside its own stack.
 
 ## Speed budget (admission control)
 
-What decides whether a strip keeps up is **cost x pixels**. The compiler gives each program a `cost`, a weighted per-pixel operation count (simple operators 1, `hsv` 8, `noise` 8, `blend` 10, ...). The estimate is
+What decides whether a strip keeps up is **cost x pixels**. The compiler gives each program a `cost`, a weighted per-pixel operation count (simple operators 1, every function call at least 2, `prev` 5, `pal` 6, `hsv` 8, `noise` 8, `blend` 10, ...). The estimate is
 
 ```text
 estimated frame time (us) = pixels x (0.3 x cost + 1)
 ```
 
-calibrated on an ESP32-C6 at 160 MHz against eight formulas: the estimate came out 0.99x to 1.35x the measured worst frame, and `tests/test_lsf.cpp` fails if it drifts outside 0.9x..1.5x.
+calibrated on an ESP32-C6 at 160 MHz against eight formulas: the estimate comes out 1.09x to 1.38x the measured worst frame, and `tests/test_lsf.cpp` fails if it drifts outside 1.0x..1.5x (an estimate below the measurement is what would let a too-slow formula in).
+
+The weights were calibrated against whole formulas, not one function at a time, and they lean high: a call costs at least 2 because the call itself costs about as much as a simple operator, and `prev`/`prev2`, which read the host's frame buffer, carry a margin (at their earlier weights `fire.lsf` was estimated at 0.99x of its measured time). A formula built from nothing but the one function that is cheapest relative to its weight can still run somewhat slower than estimated. That is what the run-time guards below are for.
 
 - **At upload.** A formula whose estimate for the strip's total LED count exceeds `LSF_BUDGET_US` (default **15000**) is rejected with `over budget: ~22 ms for 50 LEDs, this formula fits 35 LEDs`, and the old formula keeps running.
-- **Every frame.** The check repeats for the segment actually being drawn. If you later add LEDs or widen a segment, the slot turns black with an `over budget` message rather than stalling WiFi, and resumes by itself when it fits again. This is also why the upload check is skipped at boot: the strip is not set up yet.
-- **Last resort.** If a frame really takes more than 60 ms three times in a row (`LSF_SLOW_FRAME_US`), the slot is switched off until it is uploaded again.
+- **Every segment, every frame.** The check repeats for the segment actually being drawn. If you later add LEDs or widen a segment, that segment turns black with an `over budget` message rather than stalling WiFi, and resumes by itself when it fits again. Other, smaller segments running the same slot keep drawing. This is also why the upload check is skipped at boot: the strip is not set up yet.
+- **Every frame, all segments together.** Many segments can each be under budget and still add up: 30 overlapping segments at 14 ms would take 420 ms per frame. The estimates of all formula segments of one strip frame are added up, and once the next segment would take the total past `LSF_FRAME_BUDGET_US` (default **30000**, twice `LSF_BUDGET_US`, so a transition between two heavy formulas on one segment still fits) it and the rest of the frame's formula segments are filled black, with `skipped` in the state. Independently, once the **real** time spent on formulas in a frame passes `LSF_SLOW_FRAME_US` (60 ms), no more formula segments are drawn in that frame, which covers an estimate that is too low. Segments are drawn in WLED's segment order, so the same segments are skipped every frame.
+- **Last resort.** If one segment's frame really takes more than 60 ms three times in a row (`LSF_SLOW_FRAME_US`), the formula is switched off until it is uploaded again. The count is kept per segment, so a slow big segment is caught even when the same formula also runs on a small fast one.
 
 The constants (`LSF_US_PER_COST_X10`, `LSF_US_PER_PIXEL_X10`) are for the ESP32-C6. Other chips run at different speeds; measure `avgUs` against `estUs` on yours and adjust.
 
