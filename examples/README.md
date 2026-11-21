@@ -25,22 +25,20 @@ The **Speed** and **Intensity** sliders in WLED are `sp` and `ix` in every formu
 | [`ripple2d.lsf`](ripple2d.lsf) | Concentric ripples from the centre of a panel | | 35 | 52 | 903 | `cx`, `cy`, `w`, `h`, `pal` |
 | [`fire.lsf`](fire.lsf) | A flame: heat rises, cools, and is re-seeded at the base | `sp` cooling, `ix` spark rate | 84 | 114 | 426 | `prev()` (frame memory) |
 | [`falling_leaves.lsf`](falling_leaves.lsf) | Leaves falling from the middle of a strand out to both ends (a strand draped over a door frame), over a few green foliage pixels | `sp` fall speed, `ix` how many leaves | 161 | 224 | 219 | `hash`, `hsv`, cells and layers |
-| [`falling_leaves_autumn.lsf`](falling_leaves_autumn.lsf) | A door-frame variant of the leaves: slowly wandering green dots with brown and amber leaves that fall at a gentle pace and pass *behind* the green | none | 145 | 217 | 226 | `hash`, `noise`, `blend`, `hsv` |
 | [`bar_sparkles.lsf`](bar_sparkles.lsf) | About 8 sparkles at once on a 256-pixel (32x8) panel, in random yellow, white and pink shades (custom slider 1 above 200 adds red and green); everything else is black, so it is meant as an overlay segment (blend mode Add) | none | 120 | 147 | 679 | `hash`, `sin`, `hsv`, `dim` |
-| [`autumn_twinkle.lsf`](autumn_twinkle.lsf) | Thanksgiving colours: every pixel slowly swells and fades on its own 6-12 s cycle and picks a new fall colour each time | none | 61 | 98 | 493 | `hash`, `sin`, `scale`, `hsv` |
+| [`palette_twinkle.lsf`](palette_twinkle.lsf) | Every pixel slowly swells and fades on its own cycle and picks a new colour from the segment's palette each time; P1 sets the pace (0 = 4-9 s cycles, 255 = 6-12 s) | P1 pace | 59 | 92 | 524 | `hash`, `sin`, `scale`, `pal`, `dim` |
+| [`palette_chase.lsf`](palette_chase.lsf) | Bands of the palette's first and last colour, 6 px each, marching along the strip; each band fades up and down so the colours never mix | none | 29 | 45 | 1034 | `sin`, `scale`, `pal`, `dim` |
+| [`palette_garland.lsf`](palette_garland.lsf) | A swag of lights: slow waves of the palette's first and last colour with a little wobble roll along the strip, passing through dark at each change | none | 41 | 61 | 777 | `sin`, `scale`, `pal`, `dim` |
+| [`palette_fill.lsf`](palette_fill.lsf) | The palette's first colour rises from both ends to the middle (the top of a door frame), holds, drains back down, then the last colour does the same; 10 s per colour | none | 81 | 112 | 433 | `min`, `clamp`, `sin`, `pal`, `dim` |
+| [`palette_drops.lsf`](palette_drops.lsf) | A door-frame formula: drops of palette colour fall from the middle (the top) to both ends. P1 up to 64: over a faint palette glow. P1 above 64 (leaves): Color 2 dots wander in front on a dark Color 2 floor, and the drops pass *behind* them | P1 picks the look | 152 | 232 | 212 | `hash`, `noise`, `blend`, `pal`, `dim`, `k1` |
 | [`end_flames.lsf`](end_flames.lsf) | A crackling fire that starts at both ends, with wisps that peel off and drift all the way to the centre | none | 186 | 242 | 203 | `noise`, `tri`, `hash`, stateless |
-| [`christmas_twinkle.lsf`](christmas_twinkle.lsf) | Christmas: every pixel slowly swells and fades on its own 4-9 s cycle and picks red or green (about half each) each time | none | 67 | 104 | 465 | `hash`, `sin`, `scale`, `hsv` |
-| [`christmas_chase.lsf`](christmas_chase.lsf) | Red and green bands, 6 px each, marching along the strip; each band fades up and down so the colours never mix into yellow | none | 36 | 58 | 815 | `sin`, `scale`, `hsv` |
-| [`christmas_garland.lsf`](christmas_garland.lsf) | A swag of lights: slow red and green waves with a little wobble roll along the strip, passing through dark at each change | none | 48 | 74 | 646 | `sin`, `scale`, `hsv` |
-| [`christmas_fill.lsf`](christmas_fill.lsf) | Red rises from both ends to the middle (the top of a door frame), holds, drains back down, then green does the same; 10 s per colour | none | 90 | 119 | 408 | `min`, `clamp`, `sin`, `hsv` |
-| [`christmas_door.lsf`](christmas_door.lsf) | A door-frame formula in two looks. Custom slider 1 (P1) up to 200: red and green drops fall from the middle (the top) to both ends over a faint red/green glow; above 200: the red/green twinkle | P1 picks the look | 161 | 240 | 205 | `hash`, `noise`, `sin`, `hsv` |
 | [`bench_heavy_noise.lsf`](bench_heavy_noise.lsf) | A benchmark, not a nice effect: 36 `noise()` calls per pixel | | 226 | 486 | 102 | used to calibrate the speed estimate |
 
 "Fits" is the number of LEDs the formula can drive within the default 15 ms budget (see [docs/API.md](../docs/API.md#speed-budget-admission-control)). The figures are produced by the compiler's own estimate, not typed in.
 
 ## Measured on hardware
 
-On an ESP32-C6 (WLED main, 160 MHz) with 50 LEDs, the worst single frame in a quiet run was about 0.5 ms for `rainbow_wave`, 0.7 ms for `plasma`, `comet_trail`, `twinkle` and `ripple2d`, 1.8 ms for `fire`, 2.6 ms for `falling_leaves` and 6.4 ms for `bench_heavy_noise`. The three autumn examples averaged 2.3 ms (`falling_leaves_autumn`), 1.1 ms (`autumn_twinkle`) and 2.8 ms (`end_flames`) as reported by the device on a 50-LED strip. These are one board and one strip; the `avgUs` and `worstUs` fields the device reports give the numbers for yours.
+On an ESP32-C6 (WLED main, 160 MHz) with 50 LEDs, the worst single frame in a quiet run was about 0.5 ms for `rainbow_wave`, 0.7 ms for `plasma`, `comet_trail`, `twinkle` and `ripple2d`, 1.8 ms for `fire`, 2.6 ms for `falling_leaves` and 6.4 ms for `bench_heavy_noise`. An earlier version of the door's leaves averaged 2.3 ms, the twinkle 1.1 ms and `end_flames` 2.8 ms as reported by the device on a 50-LED strip (the `palette_*` formulas that replaced the first two are slightly dearer: they call `pal()` and `dim()`; measure them on your strip). These are one board and one strip; the `avgUs` and `worstUs` fields the device reports give the numbers for yours.
 
 ## Reading `falling_leaves.lsf`
 
@@ -55,12 +53,18 @@ It is the largest example and shows several techniques that carry over to other 
 
 The program is 895 of the 1024 source bytes, so the comments are short on purpose: comments count toward the limit.
 
-## The autumn set
+## The palette set (Fall and Christmas)
 
-`falling_leaves_autumn.lsf`, `autumn_twinkle.lsf` and `end_flames.lsf` were written for a door frame with 50 LEDs (the middle of the strand is the top), and they all depend only on position and time, so they need no frame memory. Three techniques are worth borrowing:
+`palette_drops.lsf`, `palette_twinkle.lsf`, `palette_chase.lsf`, `palette_garland.lsf` and `palette_fill.lsf`, with `end_flames.lsf`, are what the door and the mantle run. The palette ones **take their colours from the segment's palette** (`pal()`), so one formula serves both seasons: a preset picks the palette and the formula does not change. The board setup uploads a Christmas and a Fall palette ([`board_setup/devices/palettes/`](../board_setup/devices/palettes/)), laid out for this: 16 exact slots (WLED builds a custom palette from 16 slots, one per 16 index values), and the formulas read them like this:
 
-- **A slowly wandering dot with soft edges.** In `falling_leaves_autumn`, each block of ten pixels holds one green dot whose position is `noise(block, t / 64)`, in 1/256 pixel. The brightness of a pixel falls off with its distance from the dot, so the dot slides between pixels instead of hopping.
-- **Drawing something behind something else.** The final colour is `blend(leaf, green, dot_brightness)` where there is a leaf and plain green where there is not, so a leaf passing a dot leaves the green lit, and the dot's dim edges fade into the leaf.
+- **Random colours** (`palette_twinkle`, `palette_drops`): `pal(hash(...) % 16 * 17)`. An index of `17 * k` is exactly slot `k`, so a pixel is always one of the palette's colours and never a blend of two neighbours (red next to green would blend through yellow).
+- **Two colours** (`palette_chase`, `palette_garland`, `palette_fill`): `pal(0)` and `pal(255)`, the first and last slot.
+- A segment on WLED's *Default* palette makes `pal()` return Color 1 for every pixel, so give the preset a palette.
+
+All of them depend only on position and time, so they need no frame memory (as does `end_flames.lsf`, written for a door frame with 50 LEDs, where the middle of the strand is the top). Three techniques are worth borrowing:
+
+- **A slowly wandering dot with soft edges.** In `palette_drops` (with P1 above 64), each block of ten pixels holds one green dot whose position is `noise(block, t / 64)`, in 1/256 pixel. The brightness of a pixel falls off with its distance from the dot, so the dot slides between pixels instead of hopping.
+- **Drawing something behind something else.** The final colour is `blend(leaf, k1, dot_brightness)` where there is a leaf and plain Color 2 where there is not, so a leaf passing a dot leaves the green lit, and the dot's dim edges fade into the leaf.
 - **Threads of different speeds.** In `end_flames`, the main fire is noise bands drifting at about 3 px/s, while thin wisps are moving packets at about 5 px/s. The wisps only start near the base (`e > 3`, fading in) so they look as if they peel off the fire, and they dim with distance on their way to the centre. Pixels combine the layers with `max()`.
 
 Both of the larger formulas are close to the 1024-byte source limit (comments count), so their comments are short on purpose. To install them on a board as a rotating playlist, see [`board_setup/Readme.md`](../board_setup/Readme.md#per-device-effects).

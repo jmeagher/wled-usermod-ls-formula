@@ -1,69 +1,52 @@
 #!/usr/bin/env bash
-# Install the Mantle's Christmas presets (reds and greens). The boot preset is NOT changed.
+# Install the Mantle's Fall and Christmas presets. The boot preset is NOT changed.
 #
 #   board_setup/devices/mantle/apply.sh [HOST]       # HOST defaults to wled-mantle.local
 #
-# Re-runnable. Run it after `provision`, which replaces the whole filesystem (formulas and presets included).
+# Re-runnable. Run it after `provision`, which replaces the whole filesystem (formulas, palettes and presets included).
 #
-# Presets (ids are high on purpose, so they never collide with the boot preset the board was provisioned with):
-#   20  "Christmas Twinkle"  examples/christmas_twinkle.lsf (usermod slot 0): every LED swells and fades, red or green
-#   21  "Christmas Chase"    examples/christmas_chase.lsf   (usermod slot 1): 6 px red and green bands marching along
-#   22  "Christmas"          a playlist of 20, 21, 23 and 24, SECONDS_PER_PATTERN each (default 120), repeating
-#   23  "Garland Sway"       examples/christmas_garland.lsf (usermod slot 2): slow red and green waves, like a swag
-#   24  "Christmas Fill"     examples/christmas_fill.lsf    (usermod slot 3): red rises from both ends, drains, then green
-# Start the show by choosing preset 22 in WLED, or: curl -X POST http://wled-mantle.local/json/state -d '{"ps":22}'
+# Both seasons are installed at once. The four usermod slots hold formulas that take their colours from the palette
+# (see ../lib.sh), so each season is a set of presets that pick a palette; no season needs a slot of its own:
+#   slot 0  palette_twinkle.lsf  every LED slowly swells and fades in a palette colour
+#   slot 1  palette_chase.lsf    6 px bands of the first and last palette colour marching along
+#   slot 2  palette_garland.lsf  slow waves of the first and last palette colour, like a swag
+#   slot 3  palette_fill.lsf     the first palette colour rises from both ends and drains, then the last colour
 #
-# Both formulas run along the strand whatever its length. The presets do not store the brightness (ib:false), so the
+#   Christmas (palette "christmas"), playlist 22
+#     20 Christmas Twinkle  21 Christmas Chase  23 Garland Sway  24 Christmas Fill   22 "Christmas": a playlist of the four
+#   Fall (palette "fall"), playlist 32
+#     30 Autumn Twinkle     31 Autumn Chase     33 Autumn Garland  34 Autumn Fill     32 "Fall": a playlist of the four
+# Each playlist shows a pattern for SECONDS_PER_PATTERN (default 120) and repeats. The script leaves the Fall playlist
+# running. Start either by choosing it in WLED, or: curl -X POST http://wled-mantle.local/json/state -d '{"ps":22}'
+#
+# The formulas run along a strand of any length. The presets do not store the brightness (ib:false), so the
 # brightness slider stays under manual control.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-root="$(cd "$here/../../.." && pwd)"
-host="${1:-wled-mantle.local}"
-SECONDS_PER_PATTERN="${SECONDS_PER_PATTERN:-120}"
-playlist=22
-# slot | file | preset name | preset id
-patterns=(
-  "0|christmas_twinkle.lsf|Christmas Twinkle|20"
-  "1|christmas_chase.lsf|Christmas Chase|21"
-  "2|christmas_garland.lsf|Garland Sway|23"
-  "3|christmas_fill.lsf|Christmas Fill|24"
-)
-post() { curl -fsS -m 10 -X POST "http://$host$1" -H 'Content-Type: application/json' -d "$2" >/dev/null; }
-join() { local IFS=,; echo "$*"; }
+. "$here/../lib.sh"
+dev_init "${1:-wled-mantle.local}"
 
-curl -fsS -m 10 "http://$host/json/info" >/dev/null || { echo "$host did not answer; is the board on the network?" >&2; exit 1; }
+# Presets 20-24 and 30-34 are ours, but refuse to overwrite one that somebody else made under a different name.
+check_presets "20=Christmas Twinkle" "21=Christmas Chase" "22=Christmas" "23=Garland Sway" "24=Christmas Fill" \
+  "30=Autumn Twinkle" "31=Autumn Chase" "32=Fall" "33=Autumn Garland" "34=Autumn Fill" || exit 1
 
-# Presets 20-24 are ours, but refuse to overwrite one that somebody else made under a different name.
-curl -fsS -m 10 "http://$host/presets.json" | python3 -c '
-import json, sys
-have = json.load(sys.stdin)
-mine = {"20": "Christmas Twinkle", "21": "Christmas Chase", "22": "Christmas", "23": "Garland Sway", "24": "Christmas Fill"}
-for pid, name in mine.items():
-    if pid in have and have[pid].get("n") != name:
-        sys.exit("preset %s on the board is \"%s\", not \"%s\"; not overwriting it" % (pid, have[pid].get("n"), name))' \
-  || exit 1
+dev_palettes
+push_slot 0 palette_twinkle.lsf "Palette Twinkle"
+push_slot 1 palette_chase.lsf "Palette Chase"
+push_slot 2 palette_garland.lsf "Palette Garland"
+push_slot 3 palette_fill.lsf "Palette Fill"
 
-ids=(); durs=(); trans=()
-for p in "${patterns[@]}"; do
-  IFS='|' read -r slot file name id <<<"$p"
-  python3 "$root/tools/lsfx.py" "$host" push "$slot" "$root/examples/$file" --name "$name" --activate
-  sleep 1   # let the segment settle on the new effect before its state is saved
-  post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":false,\"sb\":true}"
-  sleep 3   # WLED writes the preset asynchronously; a request that arrives before then can drop the write
-  ids+=("$id"); durs+=("$((SECONDS_PER_PATTERN * 10))"); trans+=(7)
-done
+# Twinkle's slider 1 sets the pace: 0 = 4-9 s cycles (Christmas), 255 = 6-12 s (Fall). The others ignore it.
+save_preset 20 "Christmas Twinkle" 0 0 christmas
+save_preset 21 "Christmas Chase" 1 128 christmas
+save_preset 23 "Garland Sway" 2 128 christmas
+save_preset 24 "Christmas Fill" 3 128 christmas
+save_playlist 22 "Christmas" 20 21 23 24
 
-# The payload WLED's own web UI sends to save a playlist (see mbr-door/apply.sh for why every field matters).
-post /json/state "{\"playlist\":{\"ps\":[$(join "${ids[@]}")],\"dur\":[$(join "${durs[@]}")],\"transition\":[$(join "${trans[@]}")],\"repeat\":0,\"r\":false,\"end\":0},\"on\":true,\"o\":true,\"psave\":$playlist,\"n\":\"Christmas\"}"
-saved=""
-for _ in $(seq 1 20); do
-  if curl -fsS -m 10 "http://$host/presets.json" | python3 -c '
-import json, sys
-want_ps, want_dur = [int(x) for x in sys.argv[2].split(",")], [int(x) for x in sys.argv[3].split(",")]
-pl = json.load(sys.stdin).get(sys.argv[1], {}).get("playlist", {})
-sys.exit(0 if pl.get("ps") == want_ps and pl.get("dur") == want_dur else 1)' "$playlist" "$(join "${ids[@]}")" "$(join "${durs[@]}")"; then saved=yes; break; fi
-  sleep 1
-done
-[ -n "$saved" ] || { echo "the playlist was not saved as preset $playlist" >&2; exit 1; }
-echo "done on $host: presets ${ids[*]} saved; playlist 'Christmas' is preset $playlist (${SECONDS_PER_PATTERN} s each). The boot preset is unchanged."
+save_preset 30 "Autumn Twinkle" 0 255 fall
+save_preset 31 "Autumn Chase" 1 128 fall
+save_preset 33 "Autumn Garland" 2 128 fall
+save_preset 34 "Autumn Fill" 3 128 fall
+save_playlist 32 "Fall" 30 31 33 34
+echo "done on $host: Christmas presets 20 21 23 24 (playlist 22), Fall presets 30 31 33 34 (playlist 32, running, ${SECONDS_PER_PATTERN} s each). The boot preset is unchanged."

@@ -1,0 +1,15 @@
+# Door frame (middle = top): drops of palette colour fall from the middle to both ends, ~4 s.
+# P1 above 64 = leaves: Color 2 dots drift in front, on a dark Color 2 floor. Else a faint palette glow.
+let ct = 2 * i - (n - 1)               # offset from the centre, half px
+let lw = t / 82 - abs(ct)              # drop coordinate: 49 half px in ~4 s
+let a = hash((lw >> 3) * 2 + (ct > 0)) # one random slot per 8 half px, per side
+let b = hash(a + 12345)
+let lp = lw & 7                        # position inside the slot
+let off = b % 3
+let ln = 4 + 2 * (b >> 4 & 1)          # 4 or 6 half px = 2 or 3 px
+let gp = 1280 + (noise(i / 10 * 997, t / 64) - 128) * 8   # dot position, 1/256 px
+let gi = sel(c1 > 64, max(0, 256 - abs(i % 10 * 256 - gp) * 3 / 2), 0)
+let glow = dim(pal(hash(i / 4) % 16 * 17), 8 + noise(i * 200, t / 30) / 14)
+sel((a & 255) < 86 && lp >= off && lp < off + ln,
+  blend(pal((b >> 8) % 16 * 17), dim(k1, 102), min(gi, 255)),
+  sel(c1 > 64, dim(k1, gi * 2 / 5), glow))

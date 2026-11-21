@@ -1,0 +1,5 @@
+# Palette chase: bands of the palette's first and last colour, 6 px each, marching along the strip.
+# Each band fades up and down, so the two colours never mix.
+let a = (i * 21 + t / 10) & 255         # 12 px per cycle; first half colour A, second half colour B
+let v = scale(sin(a * 2 - 64), 30, 255) # dark at the edges of a band, full in the middle
+dim(pal(sel(a < 128, 0, 255)), v)

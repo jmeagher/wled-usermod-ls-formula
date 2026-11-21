@@ -1,8 +1,0 @@
-# Christmas twinkle: every pixel slowly swells and fades on its own 4-9 s cycle,
-# and picks red or green (about half each) every cycle.
-let pr = 4000 + hash(i) % 5000          # this pixel cycle length, ms
-let tt = t + hash(i + 999) % 9000       # its own phase
-let ph = tt % pr * 256 / pr             # 0..255 through the cycle
-let c = hash(i * 131 + tt / pr)         # colour choice, fixed within a cycle
-let v = scale(sin(ph - 64), 15, 255)    # dimmest at the cycle start/end
-sel(c & 1, hsv(82 + (c >> 4) % 10, 255, v * 7 / 10), hsv((c >> 4) % 6, 255, v))
