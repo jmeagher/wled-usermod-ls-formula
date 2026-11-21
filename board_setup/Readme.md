@@ -161,7 +161,7 @@ board_setup/devices/bar/apply.sh                            # then the presets b
 
 | Preset | |
 |---|---|
-| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends |
+| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends. Has quick-load label `BB`, which makes it a "scene" in the touch controller's preset list |
 | 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials.", and **red and green added to the sparkles** on both the panel and the strand |
 | 3 **"Happy Hour"** | a playlist: runs preset 2 for **4 hours** (`HAPPY_HOUR_SECONDS`, default 14400), then switches to preset 1 |
 

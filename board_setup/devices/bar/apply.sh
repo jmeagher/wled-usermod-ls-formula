@@ -100,10 +100,14 @@ PY
 
 # Save the display as preset $1 named $2. "ib":false = do not store the brightness; "sb":true = store the segment bounds.
 # Then wait until presets.json holds it with the full text, because WLED writes the file a moment later.
-save_display() {   # $1 id, $2 preset name, $3 text, $4 speed, $5 1 = colourful
+# Optional $6 is a quick-load label ("ql"): it marks the preset as a "scene" for the touch controller's preset picker,
+# which lists scenes first. Playlists count as scenes without it; plain presets need it.
+save_display() {   # $1 id, $2 preset name, $3 text, $4 speed, $5 1 = colourful, $6 quick-load label (optional)
   post /json/state "$(state_for "$3" "$4" "$5")"
   sleep 2
-  post /json/state "$(python3 -c 'import json,sys; print(json.dumps({"on":True,"psave":int(sys.argv[1]),"n":sys.argv[2],"ib":False,"sb":True}))' "$1" "$2")"
+  post /json/state "$(python3 -c 'import json,sys; d = {"on":True,"psave":int(sys.argv[1]),"n":sys.argv[2],"ib":False,"sb":True}
+if sys.argv[3]: d["ql"] = sys.argv[3]
+print(json.dumps(d))' "$1" "$2" "${6:-}")"
   local saved=""
   for _ in $(seq 1 20); do
     if get /presets.json | python3 -c '
@@ -115,8 +119,9 @@ c1 = [s.get("c1") for s in p.get("seg", []) if s.get("fx") == int(sys.argv[3])]
 pal = [s.get("pal") for s in p.get("seg", []) if s.get("fx") == 74]
 colourful = sys.argv[5] == "1"
 ok = (p.get("n") == sys.argv[2] and "bri" not in p and fx == [122, int(sys.argv[3]), 74] and txt == [sys.argv[4]]
-      and c1 == [255 if colourful else 128] and pal == [int(sys.argv[6]) if colourful else 5])
-sys.exit(0 if ok else 1)' "$1" "$2" "$fx" "$3" "$5" "$palette_id"; then saved=yes; break; fi
+      and c1 == [255 if colourful else 128] and pal == [int(sys.argv[6]) if colourful else 5]
+      and p.get("ql", "") == sys.argv[7])
+sys.exit(0 if ok else 1)' "$1" "$2" "$fx" "$3" "$5" "$palette_id" "${6:-}"; then saved=yes; break; fi
     sleep 1
   done
   [ -n "$saved" ] || { echo "preset $1 \"$2\" was not saved as expected (segments 122, $fx, 74; full text; no brightness)" >&2; exit 1; }
@@ -125,7 +130,8 @@ sys.exit(0 if ok else 1)' "$1" "$2" "$fx" "$3" "$5" "$palette_id"; then saved=ye
 
 # Scroll speed (sx) 214 and 235 are twice as fast as the earlier 110 and 150: Scrolling Text moves one column every
 # 250 - sx*200/255 ms, which is 165 ms -> 83 ms for the main text and 133 ms -> 66 ms for the long Happy Hour message.
-save_display "$boot_preset" "Birdie's Bar" "$text_main" 214 0
+# Birdie's Bar is a scene but not a playlist, so it needs the quick-load label; "Happy Hour sign" is only a helper.
+save_display "$boot_preset" "Birdie's Bar" "$text_main" 214 0 BB
 save_display "$happy_sign" "Happy Hour sign" "$text_happy" 235 1
 
 # The playlist: preset $happy_sign once, for $HAPPY_HOUR_SECONDS, then the end preset ("end") $boot_preset.
