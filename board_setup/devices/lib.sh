@@ -33,14 +33,16 @@ palette_id() {   # $1 = christmas | fall
 }
 
 # Refuse to overwrite a preset that somebody else made under another name. Arguments: ID=NAME ...
+# NAME may list alternatives separated by "|" (ID=Fall Colors|Boot), for a slot that is allowed to hold a freshly
+# provisioned device's default preset as well as ours.
 check_presets() {
   get /presets.json | python3 -c '
 import json, sys
 have = json.load(sys.stdin)
 for arg in sys.argv[1:]:
     pid, name = arg.split("=", 1)
-    if pid in have and have[pid].get("n") != name:
-        sys.exit("preset %s on the board is \"%s\", not \"%s\"; not overwriting it" % (pid, have[pid].get("n"), name))' "$@"
+    if pid in have and have[pid].get("n") not in name.split("|"):
+        sys.exit("preset %s on the board is \"%s\", not \"%s\"; not overwriting it" % (pid, have[pid].get("n"), name.split("|")[0]))' "$@"
 }
 
 # Upload the two custom palettes. Refuses to replace a different palette that is already there (one someone made).
@@ -87,14 +89,17 @@ slot_fx() {   # $1 = slot: the WLED effect id of that slot
 
 # Wait until presets.json holds preset $1 with this name, effect, custom slider 1 and palette. WLED writes presets a
 # moment after the request, and a request that arrives before then can drop the write.
-wait_preset() {   # $1 = id, $2 = name, $3 = fx, $4 = c1, $5 = palette id
+# $6 is the quick-load label the preset must carry; empty (the default) means it must have none.
+wait_preset() {   # $1 = id, $2 = name, $3 = fx, $4 = c1, $5 = palette id, $6 = ql (optional)
   local _
   for _ in $(seq 1 20); do
     if get /presets.json | python3 -c '
 import json, sys
 p = json.load(sys.stdin).get(sys.argv[1], {})
 seg = (p.get("seg") or [{}])[0]
-sys.exit(0 if p.get("n") == sys.argv[2] and [seg.get("fx"), seg.get("c1"), seg.get("pal")] == [int(a) for a in sys.argv[3:6]] else 1)' "$@"; then
+ql = sys.argv[6] if len(sys.argv) > 6 else ""
+sys.exit(0 if p.get("n") == sys.argv[2] and [seg.get("fx"), seg.get("c1"), seg.get("pal")] == [int(a) for a in sys.argv[3:6]]
+         and p.get("ql", "") == ql else 1)' "$@"; then
       return 0
     fi
     sleep 1
@@ -116,6 +121,19 @@ save_preset() {   # $1 = id, $2 = name, $3 = slot, $4 = c1, $5 = palette name
   sleep "${APPLY_SETTLE:-1}"   # let the segment settle before its state is saved
   post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ib\":false,\"sb\":true}"
   wait_preset "$id" "$name" "$fx" "$4" "$pid"
+}
+
+# Save a built-in WLED effect (not a formula slot) as a preset. Every effect setting is set explicitly, so the preset
+# does not depend on whatever the segment last held. "ql" is the quick-load label that makes it a scene (see below).
+#   $1 id  $2 name  $3 effect id  $4 palette id (WLED's built-in numbering)  $5 speed  $6 intensity
+#   $7 c1  $8 c2  $9 c3  ${10} first colour as R,G,B  ${11} quick-load label
+# Same "ib":false / "sb":true as save_preset.
+save_effect_preset() {
+  local id="$1" name="$2" fx="$3" pal="$4" sx="$5" ix="$6" c1="$7" c2="$8" c3="$9" col="${10}" ql="${11}"
+  post /json/state "{\"on\":true,\"seg\":[{\"id\":0,\"fx\":$fx,\"sx\":$sx,\"ix\":$ix,\"c1\":$c1,\"c2\":$c2,\"c3\":$c3,\"pal\":$pal,\"col\":[[$col],[0,0,0],[0,0,0]]}]}"
+  sleep "${APPLY_SETTLE:-1}"   # let the segment settle before its state is saved
+  post /json/state "{\"on\":true,\"psave\":$id,\"n\":\"$name\",\"ql\":\"$ql\",\"ib\":false,\"sb\":true}"
+  wait_preset "$id" "$name" "$fx" "$c1" "$pal" "$ql"
 }
 
 # Save a playlist of the presets in $3... as preset $1 named $2, SECONDS_PER_PATTERN each, and wait until presets.json

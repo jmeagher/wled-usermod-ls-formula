@@ -161,7 +161,7 @@ board_setup/devices/bar/apply.sh                            # then the presets b
 
 | Preset | |
 |---|---|
-| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends |
+| 1 **"Birdie's Bar"** | the boot preset: what the board shows after power-up, and after Happy Hour ends. Has quick-load label `BB`, which makes it a "scene" in the touch controller's preset list |
 | 2 "Happy Hour sign" | the same display with the message "Birdie's Bar, Happy Hour specials available now. Ask your server about our specials.", and **red and green added to the sparkles** on both the panel and the strand |
 | 3 **"Happy Hour"** | a playlist: runs preset 2 for **4 hours** (`HAPPY_HOUR_SECONDS`, default 14400), then switches to preset 1 |
 
@@ -223,6 +223,8 @@ To settle on one pattern, make its preset the boot preset (for example 3 for the
 | 23 Garland Sway | 33 Autumn Garland | slow waves of two colours, like a swag of lights |
 | 24 Christmas Fill | 34 Autumn Fill | the first colour rises from both ends to the middle, drains, then the second colour |
 | 22 **"Christmas"** | 32 **"Fall"** | a playlist of the four, 2 minutes each (`SECONDS_PER_PATTERN`) |
+
+Preset 1 **"Fall Colors"** is also installed: WLED's built-in Plasma effect (speed 70, intensity 177) in the built-in Orangery palette, on the mantle's boot preset. It is not a formula and not in a playlist. It carries the quick-load label `FC`, which lists it as a "scene" in the touch controller's preset picker (playlists count as scenes on their own; a plain preset needs the label). It replaces provision's default "Boot" preset in that slot, but not a preset someone else made there.
 
 The script leaves the Fall playlist running. Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (22 Christmas, 32 Fall on the mantle; 8 Christmas on the door).
 

@@ -100,6 +100,8 @@ def make_handler(board):
                     board.presets[str(req["psave"])] = {"n": req["n"], "playlist": req["playlist"]}
                 else:
                     board.presets[str(req["psave"])] = {"n": req["n"], "seg": [dict(board.seg)]}
+                if req.get("ql"):
+                    board.presets[str(req["psave"])]["ql"] = req["ql"]
 
     return Handler
 
@@ -176,6 +178,35 @@ class ApplyScripts(unittest.TestCase):
         self.assert_playlist(board, 22, "Christmas", [20, 21, 23, 24])
         self.assert_playlist(board, 32, "Fall", [30, 31, 33, 34])
         self.assertEqual(board.boot, 0)   # the boot preset is not touched
+
+    def test_mantle_fall_colors_is_a_scene(self):
+        """Preset 1 is a built-in effect, not a formula; its quick-load label is what lists it as a scene."""
+        board = Board()
+        r = self.run_script("mantle", board)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        p = board.presets["1"]
+        seg = p["seg"][0]
+        self.assertEqual((p["n"], p["ql"]), ("Fall Colors", "FC"))
+        self.assertEqual([seg[k] for k in ("fx", "sx", "ix", "c1", "c2", "c3", "pal")], [97, 70, 177, 128, 128, 16, 47])
+        self.assertEqual(seg["col"][0], [255, 160, 0])
+        # Only the label separates a scene from a component: the playlist's patterns must not have one.
+        for pid in ("20", "21", "23", "24", "30", "31", "33", "34"):
+            self.assertNotIn("ql", board.presets[pid])
+        # Re-running keeps it, and it also replaces a freshly provisioned device's default "Boot" preset.
+        board2 = Board()
+        board2.presets["1"] = {"n": "Boot", "seg": [{}]}
+        r = self.run_script("mantle", board2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(board2.presets["1"]["ql"], "FC")
+        r = self.run_script("mantle", board2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(board2.presets["1"]["ql"], "FC")
+        # ...but not a preset somebody else made there.
+        board3 = Board()
+        board3.presets["1"] = {"n": "Somebody else's preset", "seg": [{}]}
+        r = self.run_script("mantle", board3)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not overwriting", r.stderr)
 
     def test_refuses_to_overwrite_foreign_preset_or_palette(self):
         board = Board()
