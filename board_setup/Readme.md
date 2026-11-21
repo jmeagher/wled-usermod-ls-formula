@@ -224,6 +224,8 @@ To settle on one pattern, make its preset the boot preset (for example 3 for the
 | 24 Christmas Fill | 34 Autumn Fill | the first colour rises from both ends to the middle, drains, then the second colour |
 | 22 **"Christmas"** | 32 **"Fall"** | a playlist of the four, 2 minutes each (`SECONDS_PER_PATTERN`) |
 
+Preset 1 **"Fall Colors"** is also installed: WLED's built-in Plasma effect (speed 70, intensity 177) in the built-in Orangery palette, on the mantle's boot preset. It is not a formula and not in a playlist. It carries the quick-load label `FC`, which lists it as a "scene" in the touch controller's preset picker (playlists count as scenes on their own; a plain preset needs the label). It replaces provision's default "Boot" preset in that slot, but not a preset someone else made there.
+
 The script leaves the Fall playlist running. Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (22 Christmas, 32 Fall on the mantle; 8 Christmas on the door).
 
 **Why not WLED's built-in effects?** Some of these could be built-ins with a palette (Twinklefox for the twinkle, *Palette* or *Colorwaves* for the garland, *Fire 2012* with Mirror for the flames), and that would free slots. They were left as formulas: the formulas keep the exact look the boards already had, and the slot budget is no longer a limit because the seasons share slots. A built-in can be added as one more preset with no change to the scripts.

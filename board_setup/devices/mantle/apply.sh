@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Mantle's Fall and Christmas presets. The boot preset is NOT changed.
+# Install the Mantle's Fall and Christmas presets, plus "Fall Colors" (preset 1). The boot preset is NOT changed.
 #
 #   board_setup/devices/mantle/apply.sh [HOST]       # HOST defaults to wled-mantle.local
 #
@@ -16,6 +16,9 @@
 #     20 Christmas Twinkle  21 Christmas Chase  23 Garland Sway  24 Christmas Fill   22 "Christmas": a playlist of the four
 #   Fall (palette "fall"), playlist 32
 #     30 Autumn Twinkle     31 Autumn Chase     33 Autumn Garland  34 Autumn Fill     32 "Fall": a playlist of the four
+#   Fall Colors (preset 1): WLED's built-in Plasma effect in the built-in Orangery palette. It is the Mantle's boot
+#     preset, and it has the quick-load label FC: the touch controller lists playlists and labelled presets first, as
+#     "scenes". The playlists count on their own, a plain preset needs the label.
 # Each playlist shows a pattern for SECONDS_PER_PATTERN (default 120) and repeats. The script leaves the Fall playlist
 # running. Start either by choosing it in WLED, or: curl -X POST http://wled-mantle.local/json/state -d '{"ps":22}'
 #
@@ -28,7 +31,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 dev_init "${1:-wled-mantle.local}"
 
 # Presets 20-24 and 30-34 are ours, but refuse to overwrite one that somebody else made under a different name.
-check_presets "20=Christmas Twinkle" "21=Christmas Chase" "22=Christmas" "23=Garland Sway" "24=Christmas Fill" \
+check_presets "1=Fall Colors|Boot" "20=Christmas Twinkle" "21=Christmas Chase" "22=Christmas" "23=Garland Sway" "24=Christmas Fill" \
   "30=Autumn Twinkle" "31=Autumn Chase" "32=Fall" "33=Autumn Garland" "34=Autumn Fill" || exit 1
 
 dev_palettes
@@ -36,6 +39,9 @@ push_slot 0 palette_twinkle.lsf "Palette Twinkle"
 push_slot 1 palette_chase.lsf "Palette Chase"
 push_slot 2 palette_garland.lsf "Palette Garland"
 push_slot 3 palette_fill.lsf "Palette Fill"
+
+# Plasma (effect 97), Orangery (palette 47), orange. Provision's default "Boot" preset is replaced; anything else is not.
+save_effect_preset 1 "Fall Colors" 97 47 70 177 128 128 16 "255,160,0" FC
 
 # Twinkle's slider 1 sets the pace: 0 = 4-9 s cycles (Christmas), 255 = 6-12 s (Fall). The others ignore it.
 save_preset 20 "Christmas Twinkle" 0 0 christmas
