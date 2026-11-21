@@ -8,7 +8,9 @@
 # Presets (ids are high on purpose, so they never collide with the boot preset the board was provisioned with):
 #   20  "Christmas Twinkle"  examples/christmas_twinkle.lsf (usermod slot 0): every LED swells and fades, red or green
 #   21  "Christmas Chase"    examples/christmas_chase.lsf   (usermod slot 1): 6 px red and green bands marching along
-#   22  "Christmas"          a playlist of 20 and 21, SECONDS_PER_PATTERN each (default 120), repeating
+#   22  "Christmas"          a playlist of 20, 21, 23 and 24, SECONDS_PER_PATTERN each (default 120), repeating
+#   23  "Garland Sway"       examples/christmas_garland.lsf (usermod slot 2): slow red and green waves, like a swag
+#   24  "Christmas Fill"     examples/christmas_fill.lsf    (usermod slot 3): red rises from both ends, drains, then green
 # Start the show by choosing preset 22 in WLED, or: curl -X POST http://wled-mantle.local/json/state -d '{"ps":22}'
 #
 # Both formulas run along the strand whatever its length. The presets do not store the brightness (ib:false), so the
@@ -24,17 +26,19 @@ playlist=22
 patterns=(
   "0|christmas_twinkle.lsf|Christmas Twinkle|20"
   "1|christmas_chase.lsf|Christmas Chase|21"
+  "2|christmas_garland.lsf|Garland Sway|23"
+  "3|christmas_fill.lsf|Christmas Fill|24"
 )
 post() { curl -fsS -m 10 -X POST "http://$host$1" -H 'Content-Type: application/json' -d "$2" >/dev/null; }
 join() { local IFS=,; echo "$*"; }
 
 curl -fsS -m 10 "http://$host/json/info" >/dev/null || { echo "$host did not answer; is the board on the network?" >&2; exit 1; }
 
-# Presets 20-22 are ours, but refuse to overwrite one that somebody else made under a different name.
+# Presets 20-24 are ours, but refuse to overwrite one that somebody else made under a different name.
 curl -fsS -m 10 "http://$host/presets.json" | python3 -c '
 import json, sys
 have = json.load(sys.stdin)
-mine = {"20": "Christmas Twinkle", "21": "Christmas Chase", "22": "Christmas"}
+mine = {"20": "Christmas Twinkle", "21": "Christmas Chase", "22": "Christmas", "23": "Garland Sway", "24": "Christmas Fill"}
 for pid, name in mine.items():
     if pid in have and have[pid].get("n") != name:
         sys.exit("preset %s on the board is \"%s\", not \"%s\"; not overwriting it" % (pid, have[pid].get("n"), name))' \

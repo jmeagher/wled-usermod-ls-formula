@@ -211,13 +211,17 @@ Both boards also carry Christmas presets. They are added next to what is already
 | 7 "Christmas Twinkle" | slider 255: every LED slowly swells and fades in red or green |
 | 8 **"Christmas"** | a playlist of 6 and 7, 2 minutes each (`SECONDS_PER_PATTERN`) |
 
-**`mantle`**: `board_setup/devices/mantle/apply.sh` (defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset 20-22 that has another name.
+**`mantle`**: `board_setup/devices/mantle/apply.sh` (defaults to `wled-mantle.local`; or give an address). It works on a strand of any length and refuses to overwrite a preset 20-24 that has another name.
 
 | Preset | |
 |---|---|
 | 20 "Christmas Twinkle" | [`christmas_twinkle.lsf`](../examples/christmas_twinkle.lsf): every LED swells and fades in red or green |
 | 21 "Christmas Chase" | [`christmas_chase.lsf`](../examples/christmas_chase.lsf): 6 px red and green bands marching along the strand |
-| 22 **"Christmas"** | a playlist of 20 and 21, 2 minutes each |
+| 23 "Garland Sway" | [`christmas_garland.lsf`](../examples/christmas_garland.lsf): slow red and green waves, like a swag of lights |
+| 24 "Christmas Fill" | [`christmas_fill.lsf`](../examples/christmas_fill.lsf): red rises from both ends to the middle, drains, then green does the same |
+| 22 **"Christmas"** | a playlist of 20, 21, 23 and 24, 2 minutes each |
+
+`christmas_fill.lsf` is written for a door frame (the middle is the top) and suits the mantle too. The door has no free slot for it: to use it there, replace one of the fall formulas or fold it into `christmas_door.lsf`.
 
 Start either with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":22}'` (8 on the door).
 

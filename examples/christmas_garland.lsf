@@ -1,0 +1,6 @@
+# Garland sway: slow red and green waves roll along the strip, like a swag of lights.
+# The colour changes only where the wave crosses zero, so it passes through dark, never yellow.
+let a = i * 11 + t / 12 + sin(i * 5 + t / 30) / 3   # a wave with a little wobble, drifting along
+let s = sin(a)
+let v = scale(abs(s - 128) * 2, 25, 255)            # dark at the crossings, full at the crests
+sel(s > 127, hsv(0, 255, v), hsv(85, 255, v * 7 / 10))

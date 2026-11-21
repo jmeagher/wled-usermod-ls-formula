@@ -31,6 +31,8 @@ The **Speed** and **Intensity** sliders in WLED are `sp` and `ix` in every formu
 | [`end_flames.lsf`](end_flames.lsf) | A crackling fire that starts at both ends, with wisps that peel off and drift all the way to the centre | none | 186 | 242 | 203 | `noise`, `tri`, `hash`, stateless |
 | [`christmas_twinkle.lsf`](christmas_twinkle.lsf) | Christmas: every pixel slowly swells and fades on its own 4-9 s cycle and picks red or green (about half each) each time | none | 67 | 104 | 465 | `hash`, `sin`, `scale`, `hsv` |
 | [`christmas_chase.lsf`](christmas_chase.lsf) | Red and green bands, 6 px each, marching along the strip; each band fades up and down so the colours never mix into yellow | none | 36 | 58 | 815 | `sin`, `scale`, `hsv` |
+| [`christmas_garland.lsf`](christmas_garland.lsf) | A swag of lights: slow red and green waves with a little wobble roll along the strip, passing through dark at each change | none | 48 | 74 | 646 | `sin`, `scale`, `hsv` |
+| [`christmas_fill.lsf`](christmas_fill.lsf) | Red rises from both ends to the middle (the top of a door frame), holds, drains back down, then green does the same; 10 s per colour | none | 90 | 119 | 408 | `min`, `clamp`, `sin`, `hsv` |
 | [`christmas_door.lsf`](christmas_door.lsf) | A door-frame formula in two looks. Custom slider 1 (P1) up to 200: red and green drops fall from the middle (the top) to both ends over a faint red/green glow; above 200: the red/green twinkle | P1 picks the look | 161 | 240 | 205 | `hash`, `noise`, `sin`, `hsv` |
 | [`bench_heavy_noise.lsf`](bench_heavy_noise.lsf) | A benchmark, not a nice effect: 36 `noise()` calls per pixel | | 226 | 486 | 102 | used to calibrate the speed estimate |
 
