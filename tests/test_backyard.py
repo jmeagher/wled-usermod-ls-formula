@@ -22,15 +22,15 @@ def leds(segs, *names):
     return sorted(out)
 
 
-STAR_TIPS = ["Star Top-R", "Star Lower-R", "Star Upper-L", "Star Upper-R", "Star Lower-L", "Star Top-L"]
+STAR_TIPS = ["Star Top-Left", "Star Lower-Left", "Star Upper-Right", "Star Upper-Left", "Star Lower-Right", "Star Top-Right"]
 STAR_INNER = ["Star Inner %d" % k for k in range(1, 6)]
 STAR_LINES = ["Star Line %d" % k for k in range(1, 6)]
-TIERS = ["Tree Tier 1 R", "Tree Tier 1 L", "Tree Tier 2 R", "Tree Tier 2 L", "Tree Tier 3"]
+TIERS = ["Tree Tier 1 L", "Tree Tier 1 R", "Tree Tier 2 L", "Tree Tier 2 R", "Tree Tier 3"]
 
 
 class Layout(unittest.TestCase):
     def both(self):
-        return [(end, seg.layout(end)) for end in ("end", "start")]
+        return [("live", seg.layout())]
 
     def test_ids_names_and_limits(self):
         for end, segs in self.both():
@@ -50,32 +50,28 @@ class Layout(unittest.TestCase):
         for _, segs in self.both():
             self.assertEqual(leds(segs, *STAR_TIPS, *STAR_INNER), list(range(100)))
             self.assertEqual(leds(segs, *STAR_LINES), list(range(100)))
-            by = {s["n"]: s for s in segs}
-            # A point is two outer legs meeting at a corner: 16 LEDs, except the top point, split in two 8s.
-            self.assertEqual([by[n]["stop"] - by[n]["start"] for n in STAR_TIPS], [8, 16, 16, 16, 16, 8])
-            # Each corner k sits between line k-1 and line k, i.e. at LED 20k.
-            for k, n in enumerate(STAR_TIPS[1:5], start=1):
-                self.assertEqual((by[n]["start"] + by[n]["stop"]) // 2, 20 * k)
 
-    def test_tree_tiles_the_tree(self):
-        for end, segs in self.both():
-            tree = list(range(100, 200))
-            self.assertEqual(leds(segs, "Tree Body", "Tree Ornament"), tree)
-            self.assertEqual(leds(segs, *TIERS), leds(segs, "Tree Body"))
-            self.assertEqual(leds(segs, "Tree Right", "Tree Base", "Tree Left"), leds(segs, "Tree Body"))
-            by = {s["n"]: s for s in segs}
-            self.assertEqual(by["Tree Ornament"]["stop"] - by["Tree Ornament"]["start"], 19)
-            # The ornament is at one end of the strand, the body starts or ends at the plug.
-            if end == "end":
-                self.assertEqual((by["Tree Body"]["start"], by["Tree Ornament"]["stop"]), (100, 200))
-            else:
-                self.assertEqual((by["Tree Ornament"]["start"], by["Tree Body"]["stop"]), (100, 200))
-            # Tier 3 includes the base.
-            self.assertTrue(set(leds(segs, "Tree Base")) <= set(leds(segs, "Tree Tier 3")))
+    def test_star_parts_stay_on_the_star(self):
+        by = {s["n"]: s for s in seg.layout()}
+        for n in STAR_TIPS + STAR_INNER + STAR_LINES:
+            self.assertTrue(0 <= by[n]["start"] and by[n]["stop"] <= 100, n)
 
-    def test_bad_ornament_position(self):
-        with self.assertRaises(ValueError):
-            seg.layout("middle")
+    def test_tree_parts_stay_on_the_tree(self):
+        # The live bounds are hand-tuned, so tiers may leave gaps or touch the ornament by an LED; they must stay on the strand.
+        by = {s["n"]: s for s in seg.layout()}
+        for n in ["Tree Body", "Tree Ornament", "Tree Left", "Tree Right", "Tree Base"] + TIERS:
+            self.assertTrue(100 <= by[n]["start"] and by[n]["stop"] <= 200, n)
+        self.assertEqual(leds(seg.layout(), "Tree Body", "Tree Ornament"), list(range(100, 200)))
+        self.assertEqual(by["Tree Body"]["start"], 100)             # the body starts at the plug end, the ornament is last
+        self.assertEqual(by["Tree Ornament"]["stop"], 200)
+
+    def test_tree_sides(self):
+        # The strand's first side (low LEDs, from the plug) is the tree's left; the right side comes after the base.
+        by = {s["n"]: s for s in seg.layout()}
+        self.assertLess(by["Tree Left"]["stop"], by["Tree Base"]["start"] + 1)
+        self.assertLess(by["Tree Base"]["start"], by["Tree Right"]["start"])
+        self.assertLess(by["Tree Tier 1 L"]["start"], by["Tree Tier 1 R"]["start"])
+        self.assertLess(by["Tree Tier 2 L"]["start"], by["Tree Tier 2 R"]["start"])
 
 
 class Presets(unittest.TestCase):
@@ -110,6 +106,96 @@ class Presets(unittest.TestCase):
         p = seg.playlist_payload(40, "x", [10, 11], 4)
         self.assertEqual(p["playlist"]["dur"], [40, 40])
         self.assertEqual(p["playlist"]["transition"], [0, 0])
+
+
+# WLED built-in effect ids: 2 Breathe, 12 Fade, 38 Aurora, 46 Gradient, 51 Fairytwinkle, 65 Palette, 67 Colorwaves,
+# 70-73 Noise 1-4, 74 Colortwinkles, 80 Twinklefox, 88 Candle, 104 Sunrise, 106 Twinkleup.
+SOFT_EFFECTS = {2, 12, 38, 46, 51, 65, 67, 70, 71, 72, 73, 74, 80, 88, 104, 106}
+
+
+class Holiday(unittest.TestCase):
+    """The Christmas / Thanksgiving presets and the playlist that rotates through them."""
+
+    def setUp(self):
+        self.segs = seg.layout()
+        self.names = {s["n"] for s in self.segs}
+        self.presets = seg.holiday_presets()
+        self.themes = seg.holiday_themes()
+        self.lists = seg.holiday_playlists(self.presets, self.themes)
+        self.pid, self.pname, self.members = self.lists[0]
+
+    def test_ids_do_not_collide_with_the_other_presets(self):
+        ids = [p[0] for p in self.presets] + [p[0] for p in self.lists]
+        other = [p[0] for p in seg.test_presets()] + [p[0] for p in seg.playlists()] + [seg.BOOT_PRESET]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertFalse(set(ids) & set(other))
+        self.assertTrue(all(1 < i < 251 for i in ids))
+        for _, name, _ in self.presets:
+            self.assertLessEqual(len(name), 32)
+
+    def test_each_preset_lights_exactly_one_strand(self):
+        by = {s["n"]: s for s in self.segs}
+        for pid, name, spec in self.presets:
+            self.assertTrue(set(spec) <= self.names, (pid, set(spec) - self.names))
+            strands = {"Star" if by[n]["stop"] <= 100 else "Tree" for n in spec}
+            self.assertEqual(strands, {"Star"} if pid < seg.HOLIDAY_TREE_BASE else {"Tree"}, name)
+            p = seg.holiday_payload(pid, name, spec, self.segs)
+            lit = [g["id"] for g in p["seg"] if g["on"]]
+            self.assertEqual(sorted(self.segs[i]["n"] for i in lit), sorted(spec))
+            self.assertEqual([g["id"] for g in p["seg"]], [s["id"] for s in self.segs])
+            self.assertTrue(p["o"] and p["psave"] == pid)
+
+    def test_values_are_in_range_and_use_built_in_effects(self):
+        for pid, name, spec in self.presets:
+            for n, g in spec.items():
+                # Only soft built-in effects (no custom LS Formula, no blinking, strobing, heartbeat or fast chases), slowly.
+                self.assertIn(g["fx"], SOFT_EFFECTS, (name, n, g["fx"]))
+                self.assertLessEqual(g["sx"], 120, (name, n))
+                self.assertTrue(0 <= g["sx"] <= 255 and 0 <= g["ix"] <= 255 and 0 <= g.get("pal", 0) < 255)
+                self.assertEqual(len(g["col"]), 3)
+                self.assertTrue(all(len(c) == 3 and all(0 <= v <= 255 for v in c) for c in g["col"]))
+
+    def test_both_themes_on_both_strands(self):
+        with open(seg.HOLIDAY_FILE) as f:
+            import json
+            data = json.load(f)
+        for key in ("star", "tree"):
+            self.assertEqual({p["theme"] for p in data[key]}, {"christmas", "thanksgiving"}, key)
+
+    def test_every_segment_option_is_used(self):
+        used = {n for _, _, spec in self.presets for n in spec}
+        for n in self.names:
+            self.assertIn(n, used, "no holiday preset uses %s" % n)
+
+    def test_playlist_alternates_strands_30s_each(self):
+        self.assertEqual(sorted(self.members), sorted(p[0] for p in self.presets))
+        self.assertEqual(self.members[:4], [50, 70, 51, 71])                      # star, tree, star, tree
+        p = seg.playlist_payload(self.pid, self.pname, self.members, seg.HOLIDAY_SECONDS, seg.HOLIDAY_FADE)
+        self.assertEqual(p["playlist"]["dur"], [300] * len(self.members))
+        self.assertEqual(p["playlist"]["transition"], [seg.HOLIDAY_FADE * 10] * len(self.members))
+        self.assertEqual(p["playlist"]["repeat"], 0)                                # loops forever
+
+    def test_theme_playlists(self):
+        self.assertEqual([p[1] for p in self.lists], ["Backyard holiday", "Backyard christmas", "Backyard thanksgiving"])
+        for (pid, name, members), theme in zip(self.lists[1:], ("christmas", "thanksgiving")):
+            self.assertLessEqual(len(name), 32)
+            self.assertTrue(members and all(self.themes[i] == theme for i in members), name)
+            # every preset of the theme is in it, and the strands alternate while both have patterns left
+            self.assertEqual(sorted(members), sorted(i for i in self.themes if self.themes[i] == theme))
+            self.assertEqual([m >= seg.HOLIDAY_TREE_BASE for m in members[:8]], [False, True] * 4)
+
+    def test_boot_playlist_starts_with_the_layout_preset(self):
+        m = seg.boot_members(self.members)
+        self.assertEqual(m[0], seg.BOOT_LAYOUT_PRESET)
+        self.assertEqual(m[1:], self.members[1:])                # only the first step is swapped, for a look-alike
+        self.assertEqual(len(m), len(self.members))
+        self.assertNotIn(seg.BOOT_LAYOUT_PRESET, [p[0] for p in self.presets] + [p[0] for p in self.lists])
+        self.assertNotEqual(seg.BOOT_LAYOUT_PRESET, seg.BOOT_PRESET)
+        self.assertEqual(self.pid, 43)                           # the mixed playlist is the first one, and the boot one
+
+    def test_unknown_segment_is_rejected(self):
+        with self.assertRaises(ValueError):
+            seg.holiday_payload(99, "x", {"Star Nope": {"fx": 1, "sx": 1, "ix": 1, "col": []}}, self.segs)
 
 
 if __name__ == "__main__":

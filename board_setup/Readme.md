@@ -192,22 +192,34 @@ Each display preset has three segments:
 
 After a reboot the brightness is the board's default (128) until you move the slider.
 
-**`backyard`**: two 100-LED WS2812 strands, "Star" on GPIO 18 and "Tree" on GPIO 19 (plugged in at the top of each shape). `board_setup/devices/backyard/segments.py` (defaults to `wled-backyard.local`; give the IP address if mDNS is slow) defines 28 segments, saves test presets and playlists, and makes the boot preset (1) keep the layout across reboots. Re-runnable; run it after `provision`. `--dry-run` prints everything, `--step-seconds N` sets the time per test step (default 4), `--ornament-at start` is for a tree strand whose spare LEDs are at the plug end.
+**`backyard`**: two 100-LED WS2812 strands, "Star" on GPIO 18 and "Tree" on GPIO 19 (plugged in at the top of each shape). `board_setup/devices/backyard/segments.py` (defaults to `wled-backyard.local`; give the IP address if mDNS is slow) defines 28 segments, saves test presets and playlists, and makes the boot preset (1) keep the layout across reboots. Re-runnable; run it after `provision`. `--dry-run` prints everything, `--step-seconds N` sets the time per test step (default 4).
 
 | Segments | LEDs | Notes |
 |---|---|---|
 | 0 `Star`, 1 `Tree` | 0-99, 100-199 | the whole strands |
-| `Star Top-R`, `Lower-R`, `Upper-L`, `Upper-R`, `Lower-L`, `Top-L` | 8 or 16 each | the star's **outline**: the outer legs of the five lines. A point is the two legs that meet at a corner; the top point wraps round the strand's ends, so it is two segments |
-| `Star Inner 1`-`5` | 4 each | the inner pentagon: the middle of each line (the interior crossing pieces) |
-| `Star Line 1`-`5` | 20 each | the five lines in hanging order (1 = top to lower right) |
-| `Tree Body` / `Tree Ornament` | 100-180 / 181-199 | the 81 LEDs of the tree shape and the 19 spare ones bundled at the top |
-| `Tree Tier 1 R`, `Tier 1 L`, `Tier 2 R`, `Tier 2 L` | 9-13 each | a tier's two halves are not contiguous on the strand, so each is two segments: switch both on |
-| `Tree Tier 3`, `Tree Base` | 38 and 18 | tier 3 includes the base; the base is the bottom edge only |
-| `Tree Right`, `Tree Left` | 32 and 31 | top to the right (or left) tier 3 tip; `Right` + `Base` + `Left` = the body |
+| `Star Top-Left`, `Lower-Left`, `Upper-Right`, `Upper-Left`, `Lower-Right`, `Top-Right` | 6 to 16 each | the star's **outline**: the outer legs of the five lines. A point is the two legs that meet at a corner; the top point wraps round the strand's ends, so it is two segments |
+| `Star Inner 1`-`5` | 4 to 6 each | the inner pentagon: the middle of each line (the interior crossing pieces) |
+| `Star Line 1`-`5` | about 20 each | the five lines in hanging order (1 = top to lower left) |
+| `Tree Body` / `Tree Ornament` | 100-181 / 182-199 | the tree shape and the 18 spare LEDs bundled at the top |
+| `Tree Tier 1 L`, `Tier 1 R`, `Tier 2 L`, `Tier 2 R` | 8-13 each | a tier's two halves are not contiguous on the strand, so each is two segments: switch both on |
+| `Tree Tier 3`, `Tree Base` | 38 and 17 | tier 3 includes the base; the base is the bottom edge only |
+| `Tree Left`, `Tree Right` | 33 and 31 | `Left` is the strand's first side (from the plug) down to the base, `Right` the way back up; `Left` + `Base` + `Right` cover the body |
 
-The boundaries are the `STAR_LEG` and `TREE_CORNERS` numbers at the top of the script (3.05 LEDs per foot of the tree pattern), meant to be fine-tuned: change a number, run it again, watch the test playlist. Colours show where each piece is: the outline test gives each point its own colour, `outline+inner` lights every LED in two colours (a dark LED is a gap).
+The boundaries are the `STAR_SEGMENTS` and `TREE_SEGMENTS` tables at the top of the script. They were fetched from the live board (2026-11-26) after being tuned by hand, so they leave a few gaps and touch by an LED in places. Edit a number, run it again, watch the test playlist. Colours show where each piece is: the outline test gives each point its own colour, `outline+inner` lights every LED in two colours (a dark LED is a gap).
 
 Test presets 10-14 (star), 20-27 (tree) and 29 (both strands), and playlists **40** `Backyard test: star`, **41** `Backyard test: tree` and **42** `Backyard test: all`, which the script leaves running. Start one with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":41}'`.
+
+**Holiday playlists** (presets 50-63 for the star, 70-81 for the tree, defined in `board_setup/devices/backyard/holiday.json`): Christmas (red, green, white, gold) and Thanksgiving (orange, amber, burgundy, brown) patterns made only of WLED's built-in effects and palettes, all soft: slow Colortwinkles (the same fading twinkle the bar uses), Twinklefox, Twinkleup, Fairytwinkle, Candle, and slow Breathe, Fade and colour drifts. No blinking, strobing, heartbeat or chases. Each preset names all 28 segments and turns off the ones it does not use, so only one strand is lit at a time. Between them they use every segment: both whole strands, the outline as a whole and point by point, the inner pentagon, the lines singly and in groups, the tree body, ornament, left/base/right, and each tier.
+
+| Playlist | Plays |
+|---|---|
+| **43** `Backyard holiday` | every Christmas and Thanksgiving pattern, mixed. **This is the boot playlist** |
+| **44** `Backyard christmas` | the Christmas patterns only |
+| **45** `Backyard thanksgiving` | the Thanksgiving patterns only |
+
+Each alternates a star pattern with a tree pattern, 30 seconds each with a 2 second crossfade, and repeats forever. Pick one on the board's Presets page or with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":44}'`. Edit `holiday.json` and re-run `segments.py` to change the patterns.
+
+**Boot.** The board starts playlist 43 at power-up (`def.ps` in its config). WLED keeps segments only in a preset saved from the live state, and a preset cannot hold both segments and a playlist or start a playlist, so the script saves preset 2 `Boot layout` from the live state while the first pattern shows: it looks like that pattern and carries the whole layout. Playlist 43 plays preset 2 in the place of that first pattern, so after a power cut the segments come back as the playlist starts. The board's preset 1 `Boot` is also a layout preset. If you change the layout, re-run the script so presets 1 and 2 follow.
 
 **Overlapping segments.** WLED draws every segment in id order and an *off* segment still paints black, which would blank an overlapping segment that is on. So every segment except the two whole strands uses blend mode Add (`"bm":2`; black adds nothing). Keep that when you add segments. Presets for these segments should be saved as API calls (`"o":true`, as the test presets are) so that loading one never rewrites the layout: a preset saved from the live state with `"sb":true` stores the whole layout and deletes any segment it does not list. Only the boot preset is saved that way. Segment limit on a C6 is 64.
 
