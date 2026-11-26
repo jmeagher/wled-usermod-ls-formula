@@ -169,20 +169,40 @@ class Holiday(unittest.TestCase):
 
     def test_playlist_alternates_strands_30s_each(self):
         self.assertEqual(sorted(self.members), sorted(p[0] for p in self.presets))
-        self.assertEqual(self.members[:4], [50, 70, 51, 71])                      # star, tree, star, tree
+        self.assertEqual(self.members[:2], [50, 70])                                # star, then tree
         p = seg.playlist_payload(self.pid, self.pname, self.members, seg.HOLIDAY_SECONDS, seg.HOLIDAY_FADE)
         self.assertEqual(p["playlist"]["dur"], [300] * len(self.members))
         self.assertEqual(p["playlist"]["transition"], [seg.HOLIDAY_FADE * 10] * len(self.members))
         self.assertEqual(p["playlist"]["repeat"], 0)                                # loops forever
 
     def test_theme_playlists(self):
-        self.assertEqual([p[1] for p in self.lists], ["Backyard holiday", "Backyard christmas", "Backyard thanksgiving"])
-        for (pid, name, members), theme in zip(self.lists[1:], ("christmas", "thanksgiving")):
+        self.assertEqual([p[1] for p in self.lists], ["Backyard holiday", "Backyard christmas", "Backyard thanksgiving",
+                                                      "Backyard UCLA colors"])
+        for (pid, name, members), theme in zip(self.lists[1:3], ("christmas", "thanksgiving")):
             self.assertLessEqual(len(name), 32)
             self.assertTrue(members and all(self.themes[i] == theme for i in members), name)
             # every preset of the theme is in it, and the strands alternate while both have patterns left
             self.assertEqual(sorted(members), sorted(i for i in self.themes if self.themes[i] == theme))
-            self.assertEqual([m >= seg.HOLIDAY_TREE_BASE for m in members[:8]], [False, True] * 4)
+            self.assertEqual([m >= seg.HOLIDAY_TREE_BASE for m in members[:6]], [False, True] * 3)
+
+    def test_ucla_presets(self):
+        ucla = [p for p in self.presets if self.themes[p[0]] == "ucla"]
+        self.assertTrue(3 <= len(ucla) <= 5)
+        by = {s["n"]: s for s in self.segs}
+        allowed = {(39, 116, 174), (255, 209, 0), (14, 40, 66)}      # UCLA Blue and UCLA Gold (brand.ucla.edu), a dark blue
+        for pid, name, spec in ucla:
+            self.assertIn("UCLA", name)
+            self.assertTrue(all(by[n]["stop"] <= 100 for n in spec), name)               # the star only
+            used = {tuple(c) for g in spec.values() for c in g["col"]}
+            self.assertTrue(used <= allowed, (name, used - allowed))
+            self.assertTrue({(39, 116, 174), (255, 209, 0)} <= used, name)               # both blue and gold
+        ucla_list = self.lists[3]
+        self.assertEqual(ucla_list[2], sorted(p[0] for p in ucla))
+        self.assertTrue(set(ucla_list[2]) <= set(self.members))                          # and they are in the boot playlist
+        # spread out, not bunched at the end of the boot playlist
+        pos = [self.members.index(p[0]) for p in ucla]
+        self.assertLess(pos[0], len(self.members) // 2)
+        self.assertGreater(min(b - a for a, b in zip(pos, pos[1:])), 1)
 
     def test_boot_playlist_starts_with_the_layout_preset(self):
         m = seg.boot_members(self.members)

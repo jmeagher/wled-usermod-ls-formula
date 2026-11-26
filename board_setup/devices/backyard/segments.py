@@ -28,6 +28,7 @@ Why presets are written the way they are (WLED behaviour, see WLED json.cpp / pr
     the two whole strands therefore uses blend mode Add (bm 2): black adds nothing.
 """
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -119,11 +120,16 @@ def playlists():
 HOLIDAY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holiday.json")
 HOLIDAY_STAR_BASE = 50      # star holiday presets are 50.., tree ones 70..
 HOLIDAY_TREE_BASE = 70
+HOLIDAY_UCLA_BASE = 64      # the UCLA star presets, 64.. (they sit between the star and tree ranges)
 HOLIDAY_PLAYLISTS = [          # (id, name, theme or None for both)
     (43, "Backyard holiday", None),
     (44, "Backyard christmas", "christmas"),
     (45, "Backyard thanksgiving", "thanksgiving"),
+    (46, "Backyard UCLA colors", "ucla"),
 ]
+# holiday.json key, first preset id, one past the last id it may use
+HOLIDAY_SETS = (("star", HOLIDAY_STAR_BASE, HOLIDAY_UCLA_BASE), ("ucla", HOLIDAY_UCLA_BASE, HOLIDAY_TREE_BASE),
+                ("tree", HOLIDAY_TREE_BASE, 100))
 HOLIDAY_SECONDS = 30        # how long each pattern shows
 HOLIDAY_FADE = 2            # seconds the crossfade between two patterns takes
 
@@ -136,7 +142,9 @@ def holiday_presets(path=HOLIDAY_FILE):
     with open(path) as f:
         data = json.load(f)
     out = []
-    for key, base in (("star", HOLIDAY_STAR_BASE), ("tree", HOLIDAY_TREE_BASE)):
+    for key, base, limit in HOLIDAY_SETS:
+        if base + len(data[key]) > limit:
+            raise ValueError("holiday.json has too many %s presets: ids %d-%d are for them" % (key, base, limit - 1))
         for i, p in enumerate(data[key]):
             out.append((base + i, p["name"], p["seg"]))
     return out
@@ -146,8 +154,21 @@ def holiday_themes(path=HOLIDAY_FILE):
     """{preset id: "christmas" | "thanksgiving"}, in the same order and numbering as holiday_presets()."""
     with open(path) as f:
         data = json.load(f)
-    return {base + i: p["theme"] for key, base in (("star", HOLIDAY_STAR_BASE), ("tree", HOLIDAY_TREE_BASE))
-            for i, p in enumerate(data[key])}
+    return {base + i: p["theme"] for key, base, _ in HOLIDAY_SETS for i, p in enumerate(data[key])}
+
+
+def spread(pairs, extra):
+    """The pairs in order as a flat list, with the extra presets spaced evenly between them (not bunched at the end)."""
+    n, e = len(pairs), len(extra)
+    before = {}                                              # number of pairs played before each extra preset
+    for j, x in enumerate(extra):
+        before.setdefault((j + 1) * n // (e + 1), []).append(x)
+    out = []
+    for k in range(n + 1):
+        out += before.get(k, [])
+        if k < n:
+            out += pairs[k]
+    return out
 
 
 def holiday_playlists(presets, themes):
@@ -160,9 +181,9 @@ def holiday_playlists(presets, themes):
         ids = [p[0] for p in presets if theme is None or themes[p[0]] == theme]
         star = [i for i in ids if i < HOLIDAY_TREE_BASE]
         tree = [i for i in ids if i >= HOLIDAY_TREE_BASE]
-        members = []
-        for i in range(max(len(star), len(tree))):
-            members += star[i:i + 1] + tree[i:i + 1]
+        pairs = [[a, b] for a, b in zip(star, tree)]
+        extra = star[len(tree):] + tree[len(star):]          # what one strand has more of than the other (the UCLA ones)
+        members = spread(pairs, extra)
         out.append((pid, name, members))
     return out
 
@@ -212,34 +233,79 @@ def playlist_payload(pid, name, members, step_seconds, fade_seconds=0):
                          "end": 0}, "on": True, "o": True, "psave": pid, "n": name}
 
 
+SAVE_GAP = 1.5     # seconds between two preset saves: the board writes flash from its main loop, one save at a time
+READ_TRIES = 4
+
+
+def same(payload, stored):
+    """True if the preset `stored` (from /presets.json) already holds what `payload` would save."""
+    if not stored or stored.get("n") != payload["n"]:
+        return False
+    if "playlist" in payload:
+        want, got = payload["playlist"], stored.get("playlist", {})
+        return all(got.get(k) == want[k] for k in ("ps", "dur", "transition", "repeat"))
+    if stored.get("transition") != payload.get("transition") or len(stored.get("seg", [])) != len(payload["seg"]):
+        return False
+    for w, g in zip(payload["seg"], stored["seg"]):
+        if g.get("id") != w["id"] or bool(g.get("on")) != w["on"]:
+            return False
+        if w["on"] and any(k in w and g.get(k) != w[k] for k in ("fx", "sx", "ix", "pal", "bri")):
+            return False
+        if w["on"] and [list(c) for c in g.get("col", [])][:3] != w["col"]:
+            return False
+    return True
+
+
 class Board:
     def __init__(self, host):
         self.host = host
 
-    def req(self, path, body=None):
-        r = urllib.request.Request("http://%s%s" % (self.host, path), method="POST" if body is not None else "GET",
-                                   data=None if body is None else json.dumps(body).encode(),
-                                   headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(r, timeout=10) as f:
-            return json.loads(f.read() or b"null")
-
-    def wait(self, what, ok, tries=20):
-        for _ in range(tries):
+    def req(self, path, body=None, timeout=30, tries=READ_TRIES):
+        """One request to the board, retried: on weak Wi-Fi it often answers late, cut off or garbled. Every call this script
+        makes is safe to repeat (it sets state or saves a preset to the same content)."""
+        for attempt in range(tries):
+            r = urllib.request.Request("http://%s%s" % (self.host, path), method="POST" if body is not None else "GET",
+                                       data=None if body is None else json.dumps(body).encode(),
+                                       headers={"Content-Type": "application/json"})
             try:
-                if ok(self.req("/presets.json")):
-                    return
-            except (urllib.error.URLError, OSError, ValueError):
-                pass
-            time.sleep(1)
+                with urllib.request.urlopen(r, timeout=timeout) as f:
+                    return json.loads(f.read() or b"null")
+            except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
+                if attempt == tries - 1:
+                    raise SystemExit("%s %s failed %d times (weak Wi-Fi?): %s" % (r.get_method(), path, tries, e))
+                time.sleep(2 * (attempt + 1))
+
+    def presets(self):
+        """/presets.json. It is large (every preset names all the segments) and slow over weak Wi-Fi, so this is the one
+        expensive call: read it as few times as possible."""
+        return self.req("/presets.json", timeout=90)
+
+    def wait(self, what, ok, tries=8):
+        for _ in range(tries):
+            if ok(self.presets()):
+                return
+            time.sleep(3)
         raise SystemExit("%s was not saved as expected" % what)
+
+    def save_all(self, items, have, tries=3):
+        """items: [(preset id, payload)]. Saves the ones that differ from `have` (/presets.json), then reads the board once
+        and saves again what is still wrong, up to `tries` times. Re-running therefore only writes what changed."""
+        todo = [(pid, p) for pid, p in items if not same(p, have.get(str(pid)))]
+        for _ in range(tries):
+            if not todo:
+                return
+            for pid, p in todo:
+                self.req("/json/state", p)
+                time.sleep(SAVE_GAP)
+            have = self.presets()
+            todo = [(pid, p) for pid, p in todo if not same(p, have.get(str(pid)))]
+        if todo:
+            raise SystemExit("not saved as expected after %d tries: preset %s" % (tries, ", ".join(str(t[0]) for t in todo)))
 
 
 def apply(host, segs, tests, lists, step_seconds, holiday=(), holiday_lists=()):
     b = Board(host)
-    try:
-        info = b.req("/json/info")
-    except (urllib.error.URLError, OSError) as e:
-        raise SystemExit("%s did not answer (%s); is the board on the network?" % (host, e))
+    info = b.req("/json/info")
     if info["leds"]["count"] != EXPECTED_LEDS:
         raise SystemExit("%s has %d LEDs, this layout is for %d (2 x 100)" % (host, info["leds"]["count"], EXPECTED_LEDS))
 
@@ -251,7 +317,7 @@ def apply(host, segs, tests, lists, step_seconds, holiday=(), holiday_lists=()):
     mine.update({pid: {n} for pid, n, _ in holiday_lists})
     if holiday_lists:
         mine[BOOT_LAYOUT_PRESET] = {"Boot layout"}
-    have = b.req("/presets.json")
+    have = b.presets()
     for pid, names in mine.items():
         got = have.get(str(pid), {}).get("n")
         if got is not None and got not in names:
@@ -274,24 +340,13 @@ def apply(host, segs, tests, lists, step_seconds, holiday=(), holiday_lists=()):
     b.wait("the boot preset", lambda p: [(g.get("id"), g.get("n")) for g in p.get(str(BOOT_PRESET), {}).get("seg", [])
                                             if g.get("stop", 0) > 0] == [(s["id"], s["n"]) for s in segs])
 
-    # 3. Test presets and playlists.
-    for pid, name, lit in tests:
-        b.req("/json/state", preset_payload(pid, name, lit, segs))
-        b.wait("preset %d (%s)" % (pid, name), lambda p, pid=pid, name=name: p.get(str(pid), {}).get("n") == name
-               and len(p[str(pid)].get("seg", [])) == len(segs))
-    for pid, name, members in lists:
-        b.req("/json/state", playlist_payload(pid, name, members, step_seconds))
-        b.wait("playlist %d (%s)" % (pid, name), lambda p, pid=pid, name=name, members=members:
-               p.get(str(pid), {}).get("n") == name and p[str(pid)].get("playlist", {}).get("ps") == members)
-    # 4. The holiday presets and their playlist: 30 s a pattern, strands alternating, one lit at a time.
-    for pid, name, spec in holiday:
-        b.req("/json/state", holiday_payload(pid, name, spec, segs))
-        b.wait("preset %d (%s)" % (pid, name), lambda p, pid=pid, name=name: p.get(str(pid), {}).get("n") == name
-               and len(p[str(pid)].get("seg", [])) == len(segs))
-    for pid, name, members in holiday_lists[1:]:
-        b.req("/json/state", playlist_payload(pid, name, members, HOLIDAY_SECONDS, HOLIDAY_FADE))
-        b.wait("playlist %d (%s)" % (pid, name), lambda p, pid=pid, name=name, members=members:
-               p.get(str(pid), {}).get("n") == name and p[str(pid)].get("playlist", {}).get("ps") == members)
+    # 3. Test presets, holiday presets and the playlists that are plain API calls (30 s a pattern, strands alternating, one
+    #    strand lit at a time). The boot playlist is saved last, below.
+    items = [(pid, preset_payload(pid, name, lit, segs)) for pid, name, lit in tests]
+    items += [(pid, playlist_payload(pid, name, members, step_seconds)) for pid, name, members in lists]
+    items += [(pid, holiday_payload(pid, name, spec, segs)) for pid, name, spec in holiday]
+    items += [(pid, playlist_payload(pid, name, members, HOLIDAY_SECONDS, HOLIDAY_FADE)) for pid, name, members in holiday_lists[1:]]
+    b.save_all(items, b.presets())
     if holiday_lists:
         # 5. The boot playlist. Show the first pattern, save the live state (layout included) as BOOT_LAYOUT_PRESET, then
         #    the playlist that starts with it, and make that playlist what the board starts at power-up.

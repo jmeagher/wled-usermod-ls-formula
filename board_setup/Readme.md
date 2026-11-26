@@ -209,15 +209,18 @@ The boundaries are the `STAR_SEGMENTS` and `TREE_SEGMENTS` tables at the top of 
 
 Test presets 10-14 (star), 20-27 (tree) and 29 (both strands), and playlists **40** `Backyard test: star`, **41** `Backyard test: tree` and **42** `Backyard test: all`, which the script leaves running. Start one with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":41}'`.
 
-**Holiday playlists** (presets 50-63 for the star, 70-81 for the tree, defined in `board_setup/devices/backyard/holiday.json`): Christmas (red, green, white, gold) and Thanksgiving (orange, amber, burgundy, brown) patterns made only of WLED's built-in effects and palettes, all soft: slow Colortwinkles (the same fading twinkle the bar uses), Twinklefox, Twinkleup, Fairytwinkle, Candle, and slow Breathe, Fade and colour drifts. No blinking, strobing, heartbeat or chases. Each preset names all 28 segments and turns off the ones it does not use, so only one strand is lit at a time. Between them they use every segment: both whole strands, the outline as a whole and point by point, the inner pentagon, the lines singly and in groups, the tree body, ornament, left/base/right, and each tier.
+**Holiday playlists** (presets 50-63 for the star, 64-67 for UCLA, 70-81 for the tree, defined in `board_setup/devices/backyard/holiday.json`): Christmas (red, green, white, gold) and Thanksgiving (orange, amber, burgundy, brown) patterns made only of WLED's built-in effects and palettes, all soft: slow Colortwinkles (the same fading twinkle the bar uses), Twinklefox, Twinkleup, Fairytwinkle, Candle, and slow Breathe, Fade and colour drifts. No blinking, strobing, heartbeat or chases. Each preset names all 28 segments and turns off the ones it does not use, so only one strand is lit at a time. Between them they use every segment: both whole strands, the outline as a whole and point by point, the inner pentagon, the lines singly and in groups, the tree body, ornament, left/base/right, and each tier.
 
 | Playlist | Plays |
 |---|---|
-| **43** `Backyard holiday` | every Christmas and Thanksgiving pattern, mixed. **This is the boot playlist** |
+| **43** `Backyard holiday` | every Christmas, Thanksgiving and UCLA pattern, mixed, with the UCLA ones spaced through it. **This is the boot playlist** |
 | **44** `Backyard christmas` | the Christmas patterns only |
 | **45** `Backyard thanksgiving` | the Thanksgiving patterns only |
+| **46** `Backyard UCLA colors` | the four UCLA patterns, star only (the tree stays dark) |
 
-Each alternates a star pattern with a tree pattern, 30 seconds each with a 2 second crossfade, and repeats forever. Pick one on the board's Presets page or with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":44}'`. Edit `holiday.json` and re-run `segments.py` to change the patterns.
+**UCLA patterns** (presets 64-67, star only): UCLA Blue `#2774AE` and UCLA Gold `#FFD100`, the university's official colours from [brand.ucla.edu](https://www.brand.ucla.edu/identity/colors), in the same soft effects as the others. UCLA Athletics' own "True Blue" is published only in sources that disagree (`#2D68C4`, `#0072CE`, `#0073CF`), so the brand-site values are used. To change them edit the `ucla` entries in `holiday.json`.
+
+Playlists 43-45 alternate a star pattern with a tree pattern, 30 seconds each with a 2 second crossfade, and repeats forever. Pick one on the board's Presets page or with `curl -X POST http://HOST/json/state -H 'Content-Type: application/json' -d '{"ps":44}'`. Edit `holiday.json` and re-run `segments.py` to change the patterns.
 
 **Boot.** The board starts playlist 43 at power-up (`def.ps` in its config). WLED keeps segments only in a preset saved from the live state, and a preset cannot hold both segments and a playlist or start a playlist, so the script saves preset 2 `Boot layout` from the live state while the first pattern shows: it looks like that pattern and carries the whole layout. Playlist 43 plays preset 2 in the place of that first pattern, so after a power cut the segments come back as the playlist starts. The board's preset 1 `Boot` is also a layout preset. If you change the layout, re-run the script so presets 1 and 2 follow.
 
